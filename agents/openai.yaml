@@ -1,4 +1,4 @@
 interface:
   display_name: "Plan Governance"
   short_description: "Plan lifecycle governance across docs"
-  default_prompt: "用 $plan-governance 接入分析这个仓库，或用 $plan-governance 启用计划治理。"
+  default_prompt: "Use $plan-governance to analyze adoption for this repo, or use $plan-governance to enable plan governance."

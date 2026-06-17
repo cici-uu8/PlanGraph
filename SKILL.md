@@ -30,15 +30,22 @@ Do not use this skill for:
 
 ## Installed Usage
 
-User-facing entrypoints should stay narrow. The installed-skill trigger phrases are exactly:
+User-facing entrypoints should stay narrow. The installed-skill trigger phrases are:
+
+**English**
+
+- `Use $plan-governance to analyze adoption for this repo.`
+- `Use $plan-governance to enable plan governance.`
+
+**简体中文**
 
 - `用 $plan-governance 接入分析这个仓库`
 - `用 $plan-governance 启用计划治理`
 
-Their intent mapping is fixed:
+Their intent mapping is fixed regardless of language:
 
-- `用 $plan-governance 接入分析这个仓库` -> run `init`, produce the adoption report, and do not create registry or AGENTS rules.
-- `用 $plan-governance 启用计划治理` -> run `bootstrap`, create governance files, and install the managed AGENTS block unless the user explicitly refuses.
+- `Use $plan-governance to analyze adoption for this repo.` / `用 $plan-governance 接入分析这个仓库` -> run `init`, produce the adoption report, and do not create registry or AGENTS rules.
+- `Use $plan-governance to enable plan governance.` / `用 $plan-governance 启用计划治理` -> run `bootstrap`, create governance files, and install the managed AGENTS block unless the user explicitly refuses.
 
 For end users, those two entrypoints are the primary interface. The CLI commands in this file are mainly for implementation clarity, testing, and deterministic execution.
 

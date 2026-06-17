@@ -37,8 +37,8 @@
       "./assets/screenshot-timeline.png"
     ],
     "defaultPrompt": [
-      "用 $plan-governance 接入分析这个仓库。",
-      "用 $plan-governance 启用计划治理。"
+      "Use $plan-governance to analyze adoption for this repo.",
+      "Use $plan-governance to enable plan governance."
     ]
   }
 }

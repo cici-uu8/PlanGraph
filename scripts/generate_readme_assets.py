@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Generate synthetic README assets for the public repository.
+
+This script renders the logo, hero banner, and example screenshots used in
+the repository README files. It reads sample Markdown outputs from
+`examples/` and writes PNG assets into `assets/`.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

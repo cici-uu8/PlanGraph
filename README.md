@@ -51,7 +51,7 @@ After governance is enabled, the registry makes the current plan explicit. The n
 [`skills`](https://github.com/vercel-labs/skills) is an open-source Agent Skill package manager. It can detect supported agent environments and install the skill in the right place.
 
 ```bash
-npx skills add cici-uu8/Plan-governance-Skill --skill plan-governance
+npx skills add cici-uu8/Plan-governance-Skill
 ```
 
 ### Option 2: ask Codex to install it
