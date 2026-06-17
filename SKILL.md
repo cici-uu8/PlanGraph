@@ -51,6 +51,8 @@ For end users, those two entrypoints are the primary interface. The CLI commands
 
 Do not make the user drive routine lifecycle maintenance by hand. After governance is enabled, this skill should proactively choose the appropriate internal action when a task creates, replaces, closes, or audits plan documents.
 
+When adapting a brownfield repo, do as much deterministic cleanup as possible before asking the user: infer obvious closed or deferred docs, detect conservative revision chains, separate the current actionable mainline from governed but non-executable plans, refresh derived outputs, and then ask only about real ambiguity.
+
 ## Autonomous Behavior After Enablement
 
 Plan governance is active when `docs/plan_registry.md` exists.
@@ -67,6 +69,7 @@ Ask the user only when a real governance ambiguity exists, such as:
 - several candidate plans may all be current
 - it is unclear whether a new doc supersedes an old one or coexists with it
 - a brownfield repo has messy historical docs and bootstrapping would encode the wrong source of truth
+- the skill can detect a revision family but cannot safely decide which document is the successor
 
 If a repo has no meaningful project plan docs and none are being created, do not force plan governance on it. A repo can remain outside governance until project-level planning documents actually matter.
 
@@ -80,6 +83,8 @@ This skill manages three layers:
 4. `.plan-governance.yml` and `.plan-governance.ignore` adapt the skill to each repo.
 
 The skill supports multiple active workstreams. It does not assume there is only one active plan in the whole repo. Instead, it enforces one canonical registry and requires each registered document to declare its role and lifecycle clearly.
+
+`active` does not always mean executable. The timeline report separates the current actionable mainline from other governed active plans, deferred plans, references, closed plans, and superseded plans.
 
 ## First Use in an Existing Repo
 

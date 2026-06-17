@@ -26,3 +26,7 @@ The registry is canonical. Timeline and quarantine documents are derived views.
 The adoption report created by `init` is diagnostic only. It is meant to help a human review an existing repo before the registry is created.
 
 Explicit `register <doc_path>` writes a row with `classification_source=manual`. This is useful when another skill created a plan doc and the repo should ingest that one file immediately without relying on a repo-wide scan.
+
+When a repo has a clear current mainline, the registry should still keep historical closed and superseded plans so later plans can supersede them, but only the current mainline should be treated as executable.
+
+Both `plan_id` and `doc_path` should stay unique inside the registry. Lint should fail if duplicate rows appear.

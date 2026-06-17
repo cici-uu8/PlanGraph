@@ -3,6 +3,9 @@ adoption_report_path: docs/plan_adoption_report.md
 registry_path: docs/plan_registry.md
 timeline_report_path: docs/plan_timeline_report.md
 quarantine_path: docs/plan_quarantine.md
+mainline_doc_paths: []
+mainline_mode: auto
+execution_policy: auto
 update_mode: hybrid
 install_agents_block: true
 frontmatter:

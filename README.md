@@ -141,7 +141,7 @@ After enablement, the registry becomes the visible source of truth for plan life
 
 ### Timeline view
 
-The timeline report is derived from the registry, so humans and agents can quickly see active, blocked, closed, superseded, and quarantined documents.
+The timeline report is derived from the registry, so humans and agents can quickly separate the current actionable mainline from other governed but non-executable plans, references, closed docs, superseded docs, and quarantined docs.
 
 <p align="center">
   <img src="./assets/screenshot-timeline.png" alt="Plan timeline report screenshot" width="900" />

@@ -10,6 +10,9 @@ adoption_report_path: docs/plan_adoption_report.md
 registry_path: docs/plan_registry.md
 timeline_report_path: docs/plan_timeline_report.md
 quarantine_path: docs/plan_quarantine.md
+mainline_doc_paths: []
+mainline_mode: auto
+execution_policy: auto
 update_mode: hybrid
 install_agents_block: true
 frontmatter:
@@ -104,6 +107,9 @@ classification:
 Notes:
 
 - `adoption_report_path` is used by the read-only `init` command.
+- `mainline_doc_paths` can explicitly name the current actionable mainline. When set, the timeline treats only those docs as executable mainline and shows other active plans as governed but non-executable.
+- `mainline_mode=auto` means the skill may update `mainline_doc_paths` from repo evidence. Set `mainline_mode=manual` when the repo owner wants to pin the mainline explicitly and stop automatic reassignment.
+- `execution_policy` may be set explicitly to values such as `strict_mainline` or `parallel_workstreams`. The default `auto` lets the skill infer whether the repo currently behaves like one mainline or several parallel workstreams.
 - `update_mode=hybrid` is the recommended default. It preserves existing registry rows and appends newly discovered high-confidence docs.
 - `install_agents_block=true` is the recommended default when a repo explicitly enables plan governance. Set it to `false` only when the project wants governance files without managed `AGENTS.md` enforcement.
 - Repos may extend enums, but the registry and lint rules must agree with the configured enum set.

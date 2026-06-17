@@ -141,7 +141,7 @@ agent 读取 registry 和 timeline report，再决定当前事实来源。
 
 ### 时间线视图
 
-timeline report 从 registry 派生，让人和 agent 都能快速看清 active、blocked、closed、superseded、quarantine 文档。
+timeline report 从 registry 派生，让人和 agent 都能快速区分当前可执行主线、其他受治理但不可执行的计划、参考文档、closed、superseded 和 quarantine 文档。
 
 <p align="center">
   <img src="./assets/screenshot-timeline.png" alt="Plan timeline report screenshot" width="900" />

@@ -37,6 +37,57 @@ TRANSCRIPT_PATTERNS = [
     '*transcript*',
 ]
 
+CLOSED_MARKERS = [
+    'closed',
+    'closeout',
+    'completed',
+    'done',
+    'finished',
+    'retrospective',
+    'postmortem',
+    'history complete',
+    '历史完成记录',
+    '已完成',
+    '总结',
+    '收口',
+    '复盘',
+    '结项',
+]
+
+DEFERRED_MARKERS = [
+    'future',
+    'later',
+    'next phase',
+    'backlog',
+    'parking lot',
+    'deferred',
+    '待启动',
+    '后续',
+    '以后',
+    '下一阶段',
+]
+
+BLOCKED_MARKERS = [
+    'blocked',
+    'on hold',
+    'needs dependency',
+    '风险阻塞',
+    '阻塞',
+]
+
+REVISION_MARKERS = [
+    'revised',
+    'revision',
+    'updated',
+    'refresh',
+    'final',
+    '修订',
+    '修正版',
+    '更新版',
+    '终版',
+    '正式版',
+]
+
 DERIVED_DOC_NAMES = {
     'plan_registry.md',
     'plan_timeline_report.md',
@@ -80,6 +131,7 @@ class Candidate:
     confidence: float = 0.0
     reasons: list[str] = field(default_factory=list)
     quarantine_reason: str = ''
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -112,6 +164,12 @@ def ensure_repo_files(repo_root: Path) -> dict[str, Any]:
 def load_effective_config(repo_root: Path) -> dict[str, Any]:
     config_path = repo_root / '.plan-governance.yml'
     return deep_merge(load_yaml(DEFAULT_CONFIG_TEMPLATE), load_yaml(config_path))
+
+
+def persist_config(repo_root: Path, cfg: dict[str, Any]) -> None:
+    config_path = repo_root / '.plan-governance.yml'
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding='utf-8')
 
 
 def read_ignore_patterns(repo_root: Path) -> list[str]:
@@ -224,6 +282,10 @@ def matches_any(value: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(lower, pat.lower()) for pat in patterns)
 
 
+def fnmatch_casefold(value: str, pattern: str) -> bool:
+    return fnmatch.fnmatch(value.lower(), pattern.lower())
+
+
 def looks_like_transcript(rel_path: str, patterns: list[str]) -> bool:
     posix_path = rel_path.lower()
     if matches_any(posix_path, patterns):
@@ -278,12 +340,94 @@ def normalize_frontmatter_value(value: Any) -> str:
     return str(value).strip()
 
 
+def text_blob(*values: Any) -> str:
+    return ' '.join(str(value or '') for value in values).lower()
+
+
+def contains_marker(blob: str, markers: list[str]) -> bool:
+    lower = blob.lower()
+    return any(marker.lower() in lower for marker in markers)
+
+
+def coerce_enum_value(cfg: dict[str, Any], enum_name: str, value: Any, fallback: str) -> str:
+    normalized = normalize_frontmatter_value(value)
+    allowed = set(cfg.get('status_enums', {}).get(enum_name, []))
+    if normalized and (not allowed or normalized in allowed):
+        return normalized
+    return fallback
+
+
+def normalize_authoritative(value: Any, fallback: str = 'false') -> str:
+    normalized = normalize_frontmatter_value(value).lower()
+    if normalized in {'true', 'yes', '1'}:
+        return 'true'
+    if normalized in {'false', 'no', '0'}:
+        return 'false'
+    return fallback
+
+
+def infer_initial_lifecycle(candidate: Candidate, frontmatter: dict[str, Any], cfg: dict[str, Any]) -> tuple[str, str]:
+    blob = text_blob(candidate.rel_path, candidate.title, frontmatter.get('title'), frontmatter.get('notes'))
+    if frontmatter.get('lifecycle_status'):
+        lifecycle = coerce_enum_value(cfg, 'lifecycle_status', frontmatter.get('lifecycle_status'), 'active')
+    elif candidate.doc_role == 'closeout_doc' or contains_marker(blob, CLOSED_MARKERS):
+        lifecycle = 'closed'
+    elif contains_marker(blob, DEFERRED_MARKERS):
+        lifecycle = 'deferred'
+    else:
+        lifecycle = 'active'
+
+    if frontmatter.get('execution_status'):
+        execution = coerce_enum_value(cfg, 'execution_status', frontmatter.get('execution_status'), 'n_a')
+    elif lifecycle == 'closed':
+        execution = 'completed'
+    elif lifecycle in {'superseded', 'rejected', 'archived'}:
+        execution = 'cancelled'
+    elif lifecycle == 'deferred':
+        execution = 'not_started'
+    elif contains_marker(blob, BLOCKED_MARKERS):
+        execution = 'blocked'
+    elif candidate.doc_role in {'execution_plan', 'workstream_plan'}:
+        execution = 'not_started'
+    else:
+        execution = 'n_a'
+    return lifecycle, execution
+
+
+def infer_authoritative(candidate: Candidate, frontmatter: dict[str, Any], lifecycle_status: str) -> str:
+    if 'authoritative' in frontmatter:
+        return normalize_authoritative(frontmatter.get('authoritative'))
+    if lifecycle_status != 'active':
+        return 'false'
+    return 'false'
+
+
+def row_is_auto_managed(row: dict[str, str]) -> bool:
+    return row.get('classification_source', '') in {'auto_classified', 'refreshed'}
+
+
+def dedupe_registry_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    deduped: list[dict[str, str]] = []
+    seen_doc_paths: set[str] = set()
+    seen_plan_ids: set[str] = set()
+    for row in rows:
+        doc_path = row.get('doc_path', '')
+        plan_id = row.get('plan_id', '')
+        if doc_path in seen_doc_paths or plan_id in seen_plan_ids:
+            continue
+        seen_doc_paths.add(doc_path)
+        seen_plan_ids.add(plan_id)
+        deduped.append(row)
+    return deduped
+
+
 def write_registry_rows(repo_root: Path, cfg: dict[str, Any], rows: list[dict[str, str]]) -> None:
     registry_path = repo_root / cfg.get('registry_path', 'docs/plan_registry.md')
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     if not registry_path.exists():
         shutil.copy(DEFAULT_REGISTRY_TEMPLATE, registry_path)
     header_lines, _ = load_registry_layout(repo_root, cfg)
+    rows = dedupe_registry_rows(rows)
     content = '\n'.join(header_lines + [render_registry_row(row) for row in rows]).rstrip() + '\n'
     registry_path.write_text(content, encoding='utf-8')
 
@@ -329,23 +473,33 @@ def update_frontmatter_if_present(path: Path, updates: dict[str, Any]) -> None:
     path.write_text('---\n' + '\n'.join(lines).rstrip() + '\n---\n' + body, encoding='utf-8')
 
 
-def registry_row_from_candidate(candidate: Candidate, classification_source: str, today: str, existing: dict[str, str] | None = None) -> dict[str, str]:
+def registry_row_from_candidate(
+    candidate: Candidate,
+    classification_source: str,
+    today: str,
+    existing: dict[str, str] | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    cfg = cfg or {}
     existing = existing or {}
+    frontmatter = candidate.metadata.get('frontmatter') or {}
     created_at = existing.get('created_at') or today
-    lifecycle_status = existing.get('lifecycle_status') or 'active'
-    execution_status = existing.get('execution_status') or 'n_a'
-    authoritative = existing.get('authoritative') or 'false'
-    parent_plan = existing.get('parent_plan', '')
-    supersedes = existing.get('supersedes', '')
-    superseded_by = existing.get('superseded_by', '')
-    notes = existing.get('notes', '')
-    plan_id = existing.get('plan_id') or plan_id_for(candidate)
+    inferred_lifecycle, inferred_execution = infer_initial_lifecycle(candidate, frontmatter, cfg)
+    lifecycle_status = existing.get('lifecycle_status') or inferred_lifecycle
+    execution_status = existing.get('execution_status') or inferred_execution
+    authoritative = existing.get('authoritative') or infer_authoritative(candidate, frontmatter, lifecycle_status)
+    parent_plan = existing.get('parent_plan') or normalize_frontmatter_value(frontmatter.get('parent_plan'))
+    supersedes = existing.get('supersedes') or normalize_frontmatter_value(frontmatter.get('supersedes'))
+    superseded_by = existing.get('superseded_by') or normalize_frontmatter_value(frontmatter.get('superseded_by'))
+    notes = existing.get('notes') or normalize_frontmatter_value(frontmatter.get('notes'))
+    plan_id = existing.get('plan_id') or normalize_frontmatter_value(frontmatter.get('plan_id')) or plan_id_for(candidate)
+    workstream = existing.get('workstream') or normalize_frontmatter_value(frontmatter.get('workstream')) or infer_workstream(candidate)
     return {
         'plan_id': plan_id,
         'title': existing.get('title') if existing.get('classification_source') == 'manual' else candidate.title,
         'doc_path': candidate.rel_path,
         'doc_role': candidate.doc_role,
-        'workstream': infer_workstream(candidate),
+        'workstream': workstream,
         'lifecycle_status': lifecycle_status,
         'execution_status': execution_status,
         'authoritative': authoritative,
@@ -403,6 +557,7 @@ def load_quarantine_layout(repo_root: Path, cfg: dict[str, Any]) -> tuple[list[s
 def classify_candidate(candidate: Candidate, cfg: dict[str, Any]) -> Candidate:
     text = candidate.path.read_text(encoding='utf-8', errors='ignore')
     frontmatter = parse_frontmatter(text)
+    candidate.metadata['frontmatter'] = frontmatter
     patterns = cfg.get('classification', {}).get('filename_patterns', {})
     transcript_patterns = cfg.get('classification', {}).get('transcript_patterns', TRANSCRIPT_PATTERNS)
     score = 0.0
@@ -415,7 +570,7 @@ def classify_candidate(candidate: Candidate, cfg: dict[str, Any]) -> Candidate:
 
     for role, pats in patterns.items():
         for pat in pats:
-            if fnmatch.fnmatch(filename, pat) or fnmatch.fnmatch(rel, pat):
+            if fnmatch_casefold(filename, pat) or fnmatch_casefold(rel, pat):
                 role_scores[role] = role_scores.get(role, 0.0) + 0.65
                 reasons.append(f'filename matches {role}:{pat}')
 
@@ -456,6 +611,18 @@ def classify_candidate(candidate: Candidate, cfg: dict[str, Any]) -> Candidate:
     if any(token in filename for token in ['主控', '总控']) or 'roadmap' in filename.lower():
         role_scores['master_plan'] = role_scores.get('master_plan', 0.0) + 0.25
         reasons.append('filename suggests master plan')
+
+    if 'workstream' in filename.lower() or 'workstream' in rel.lower():
+        role_scores['workstream_plan'] = role_scores.get('workstream_plan', 0.0) + 0.25
+        reasons.append('filename suggests workstream plan')
+
+    if contains_marker(text_blob(filename, rel, frontmatter.get('title'), frontmatter.get('notes')), DEFERRED_MARKERS):
+        role_scores['workstream_plan'] = role_scores.get('workstream_plan', 0.0) + 0.2
+        reasons.append('contains deferred planning language')
+
+    if contains_marker(text_blob(filename, rel, frontmatter.get('title'), frontmatter.get('notes')), CLOSED_MARKERS):
+        role_scores['closeout_doc'] = role_scores.get('closeout_doc', 0.0) + 0.2
+        reasons.append('contains closeout / completion language')
 
     role, role_score = max(role_scores.items(), key=lambda item: item[1])
     confidence = min(0.99, score + role_score)
@@ -672,7 +839,7 @@ def sync_registry(repo_root: Path, cfg: dict[str, Any], mode: str) -> None:
         for c in sorted(classified, key=lambda item: item.rel_path):
             if c.confidence < high or c.rel_path in preserved_paths:
                 continue
-            rows.append(registry_row_from_candidate(c, new_source, today))
+            rows.append(registry_row_from_candidate(c, new_source, today, cfg=cfg))
     else:
         rows.extend(existing_rows)
         existing_paths = {row['doc_path'] for row in existing_rows}
@@ -680,7 +847,17 @@ def sync_registry(repo_root: Path, cfg: dict[str, Any], mode: str) -> None:
         for c in sorted(classified, key=lambda item: item.rel_path):
             if c.confidence < high or c.rel_path in existing_paths:
                 continue
-            rows.append(registry_row_from_candidate(c, new_source, today))
+            rows.append(registry_row_from_candidate(c, new_source, today, cfg=cfg))
+
+    if apply_revision_chain(rows):
+        for row in rows:
+            if row.get('lifecycle_status') != 'active':
+                row['authoritative'] = 'false'
+            if row.get('lifecycle_status') == 'deferred' and row.get('execution_status') == 'n_a':
+                row['execution_status'] = 'not_started'
+
+    mark_current_mainline_notes(rows, cfg)
+    infer_and_persist_repo_adaptation(repo_root, cfg, rows)
 
     content = '\n'.join(header_lines + [render_registry_row(row) for row in rows]).rstrip() + '\n'
     registry_path.write_text(content, encoding='utf-8')
@@ -787,11 +964,247 @@ def registry_plan_map(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
     return {row['plan_id']: row for row in rows}
 
 
+def normalize_repo_paths(paths: Any) -> set[str]:
+    return {str(path).replace('\\', '/').lstrip('./') for path in (paths or []) if str(path).strip()}
+
+
+def mainline_mode(cfg: dict[str, Any]) -> str:
+    mode = str(cfg.get('mainline_mode', 'auto')).strip().lower()
+    return mode if mode in {'auto', 'manual'} else 'auto'
+
+
+def canonical_plan_title(value: str) -> str:
+    text = Path(value).stem if value.endswith('.md') else value
+    normalized = text.lower()
+    normalized = re.sub(r'[\-_]+', ' ', normalized)
+    normalized = re.sub(r'\b(v(?:ersion)?\s*\d+(?:\.\d+)*)\b', ' ', normalized)
+    normalized = re.sub(r'\b(revised|revision|updated|refresh|final)\b', ' ', normalized)
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    return normalized
+
+
+def extract_version_tokens(value: str) -> list[str]:
+    lower = value.lower()
+    tokens: list[str] = []
+    for pattern in [
+        r'\bv(?:ersion)?\s*\d+(?:\.\d+)*\b',
+        r'\b\d+(?:\.\d+)+\b',
+        r'\b(?:revised|revision|updated|refresh|final)\b',
+        r'(?:修订版|修正版|更新版|终版|正式版)',
+    ]:
+        tokens.extend(re.findall(pattern, lower))
+    return sorted({token.strip() for token in tokens if token.strip()})
+
+
+def revision_group_key(row: dict[str, str]) -> str:
+    title = row.get('title', '') or row.get('doc_path', '')
+    canonical = canonical_plan_title(title)
+    if canonical:
+        return canonical
+    return canonical_plan_title(row.get('doc_path', ''))
+
+
+def revision_rank(row: dict[str, str]) -> tuple[int, int, str]:
+    blob = text_blob(row.get('title', ''), row.get('doc_path', ''), row.get('notes', ''))
+    version_numbers = []
+    for token in extract_version_tokens(blob):
+        numbers = re.findall(r'\d+(?:\.\d+)?', token)
+        if numbers:
+            version_numbers.extend(float(n) for n in numbers)
+    version_score = int(max(version_numbers) * 100) if version_numbers else 0
+    revision_bonus = 0
+    if contains_marker(blob, REVISION_MARKERS):
+        revision_bonus += 1
+    if row.get('last_reviewed_at'):
+        revision_bonus += 1
+    return (version_score, revision_bonus, row.get('doc_path', ''))
+
+
+def apply_revision_chain(rows: list[dict[str, str]]) -> bool:
+    changed = False
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        if not row_is_auto_managed(row):
+            continue
+        if row.get('lifecycle_status') not in {'active', 'deferred', 'unknown'}:
+            continue
+        if row.get('doc_role') not in {'master_plan', 'execution_plan', 'workstream_plan'}:
+            continue
+        key = revision_group_key(row)
+        if len(key) < 6:
+            continue
+        grouped.setdefault(key, []).append(row)
+
+    for group_rows in grouped.values():
+        if len(group_rows) < 2:
+            continue
+        ordered = sorted(group_rows, key=revision_rank, reverse=True)
+        winner = ordered[0]
+        winner_id = winner.get('plan_id', '')
+        for older in ordered[1:]:
+            if older.get('plan_id') == winner_id:
+                continue
+            if older.get('lifecycle_status') == 'active':
+                older['lifecycle_status'] = 'superseded'
+                if older.get('execution_status') in {'in_progress', 'not_started', 'blocked', 'n_a'}:
+                    older['execution_status'] = 'cancelled'
+                older['authoritative'] = 'false'
+                older['superseded_by'] = append_csv_id(older.get('superseded_by', ''), winner_id)
+                winner['supersedes'] = append_csv_id(winner.get('supersedes', ''), older.get('plan_id', ''))
+                changed = True
+    return changed
+
+
+def infer_and_persist_repo_adaptation(repo_root: Path, cfg: dict[str, Any], rows: list[dict[str, str]]) -> bool:
+    snapshot = adaptation_snapshot(rows, cfg)
+    changed = False
+
+    inferred_mainline = snapshot.get('mainline_doc_paths', [])
+    current_mainline = normalize_repo_paths(cfg.get('mainline_doc_paths'))
+    if inferred_mainline and mainline_mode(cfg) == 'auto':
+        if current_mainline != set(inferred_mainline):
+            cfg['mainline_doc_paths'] = inferred_mainline
+            changed = True
+    elif inferred_mainline and not current_mainline:
+        cfg['mainline_doc_paths'] = inferred_mainline
+        changed = True
+
+    inferred_policy = snapshot.get('execution_policy')
+    explicit_policy = str(cfg.get('execution_policy', '')).strip().lower()
+    if inferred_policy and (not explicit_policy or explicit_policy == 'auto'):
+        cfg['execution_policy'] = inferred_policy
+        changed = True
+
+    if changed:
+        persist_config(repo_root, cfg)
+    return changed
+
+
+def mark_current_mainline_notes(rows: list[dict[str, str]], cfg: dict[str, Any]) -> bool:
+    mainline_paths = set(infer_mainline_doc_paths(rows, cfg))
+    if not mainline_paths:
+        return False
+    changed = False
+    for row in rows:
+        notes = row.get('notes', '')
+        if row.get('doc_path') in mainline_paths and row.get('lifecycle_status') == 'active':
+            if 'part of current mainline' not in notes.lower():
+                row['notes'] = (notes + '; ' if notes else '') + 'part of current mainline'
+                changed = True
+        elif 'part of current mainline' in notes.lower():
+            cleaned = re.sub(r'(?i)\bpart of current mainline\b', '', notes)
+            cleaned = re.sub(r'\s*;\s*;\s*', '; ', cleaned)
+            cleaned = cleaned.strip(' ;')
+            if cleaned != notes:
+                row['notes'] = cleaned
+                changed = True
+    return changed
+
+
+def row_mainline_score(row: dict[str, str]) -> float:
+    blob = ' '.join([
+        row.get('title', ''),
+        row.get('notes', ''),
+        row.get('doc_path', ''),
+    ]).lower()
+    score = 0.0
+    if 'current mainline' in blob or 'current production mainline' in blob:
+        score += 4.0
+    if 'part of current mainline' in blob:
+        score += 5.0
+    if 'mainline' in blob:
+        score += 1.5
+    if row.get('authoritative', '').lower() == 'true':
+        score += 1.0
+    if row.get('doc_role') == 'master_plan':
+        score += 1.0
+    if row.get('doc_role') == 'execution_plan' and row.get('lifecycle_status') == 'active':
+        score += 0.5
+    return score
+
+
+def infer_mainline_doc_paths(rows: list[dict[str, str]], cfg: dict[str, Any]) -> list[str]:
+    explicit = normalize_repo_paths(cfg.get('mainline_doc_paths'))
+    if mainline_mode(cfg) == 'manual' and explicit:
+        return sorted(explicit)
+    active = [r for r in rows if r['lifecycle_status'] == 'active']
+    scored = [(row_mainline_score(row), row['doc_path']) for row in active]
+    hinted = sorted({path for score, path in scored if score >= 3.0})
+    if hinted:
+        workstreams = {r.get('workstream', '') for r in active if r['doc_path'] in set(hinted)}
+        sibling_paths = {
+            r['doc_path']
+            for r in active
+            if r.get('workstream', '') in workstreams and r.get('doc_role') in {'execution_plan', 'workstream_plan'}
+        }
+        hinted = sorted(set(hinted) | sibling_paths)
+        return hinted
+    master_plans = [r['doc_path'] for r in active if r['doc_role'] == 'master_plan']
+    if len(master_plans) == 1:
+        workstream = next((r.get('workstream', '') for r in active if r['doc_path'] == master_plans[0]), '')
+        sibling_paths = [
+            r['doc_path']
+            for r in active
+            if r.get('workstream', '') == workstream and r.get('doc_role') in {'execution_plan', 'workstream_plan'}
+        ]
+        return sorted(set(master_plans) | set(sibling_paths))
+    if len(active) == 1:
+        return [active[0]['doc_path']]
+    return []
+
+
+def infer_execution_policy(rows: list[dict[str, str]], cfg: dict[str, Any]) -> str:
+    explicit = str(cfg.get('execution_policy', '')).strip().lower()
+    if explicit and explicit != 'auto':
+        return explicit
+    mainline_paths = infer_mainline_doc_paths(rows, cfg)
+    if not mainline_paths:
+        return 'strict_mainline'
+    active = [r for r in rows if r['lifecycle_status'] == 'active' and r['doc_role'] != 'reference_doc']
+    workstreams = {r['workstream'] for r in active if r['doc_path'] in set(mainline_paths)}
+    if len(workstreams) > 1:
+        return 'parallel_workstreams'
+    return 'strict_mainline'
+
+
+def adaptation_snapshot(rows: list[dict[str, str]], cfg: dict[str, Any]) -> dict[str, Any]:
+    mainline_paths = infer_mainline_doc_paths(rows, cfg)
+    mainline_set = set(mainline_paths)
+    active = [r for r in rows if r['lifecycle_status'] == 'active']
+    deferred = [r for r in rows if r['lifecycle_status'] == 'deferred']
+    mainline_rows = [r for r in active if r['doc_path'] in mainline_set]
+    non_mainline_active = [r for r in active if r['doc_path'] not in mainline_set and r['doc_role'] != 'reference_doc']
+    policy = infer_execution_policy(rows, cfg)
+    return {
+        'execution_policy': policy,
+        'mainline_doc_paths': mainline_paths,
+        'mainline_rows': mainline_rows,
+        'non_mainline_active': non_mainline_active,
+        'deferred_rows': deferred,
+    }
+
+
+def is_mainline_row(row: dict[str, str], mainline_doc_paths: set[str]) -> bool:
+    if mainline_doc_paths:
+        return row['doc_path'] in mainline_doc_paths
+    return row_mainline_score(row) >= 3.0
+
+
 def write_timeline(repo_root: Path, cfg: dict[str, Any]) -> None:
     registry_path = repo_root / cfg.get('registry_path', 'docs/plan_registry.md')
     rows = parse_registry_rows(registry_path.read_text(encoding='utf-8')) if registry_path.exists() else []
     active = [r for r in rows if r['lifecycle_status'] == 'active']
-    waiting = [r for r in rows if r['execution_status'] in {'not_started', 'blocked'}]
+    if mainline_mode(cfg) == 'manual':
+        mainline_doc_paths = normalize_repo_paths(cfg.get('mainline_doc_paths'))
+    else:
+        mainline_doc_paths = set(infer_mainline_doc_paths(rows, cfg))
+    waiting_blocked_statuses = {'not_started', 'blocked'}
+    mainline_rows = [r for r in active if is_mainline_row(r, mainline_doc_paths)]
+    waiting_blocked_mainline = [r for r in mainline_rows if r['execution_status'] in waiting_blocked_statuses]
+    non_mainline_active = [r for r in active if not is_mainline_row(r, mainline_doc_paths) and r['doc_role'] != 'reference_doc']
+    governed_references = [r for r in active if r['doc_role'] == 'reference_doc']
+    deferred_rows = [r for r in rows if r['lifecycle_status'] == 'deferred']
+    execution_policy = infer_execution_policy(rows, cfg)
     closed = [r for r in rows if r['lifecycle_status'] in {'closed', 'superseded', 'archived', 'rejected'}]
     q_path = repo_root / cfg.get('quarantine_path', 'docs/plan_quarantine.md')
     quarantine_lines = []
@@ -805,20 +1218,47 @@ def write_timeline(repo_root: Path, cfg: dict[str, Any]) -> None:
         '',
         'Generated by `plan-governance`.',
         '',
-        '## Active Documents',
+        f'Execution policy: `{execution_policy}`.',
+        'Only documents in `Current Mainline` are actionable.',
+        '',
+        '## Current Mainline',
         '',
     ]
-    for r in active:
+    for r in mainline_rows:
         report.append(f'- `{r["doc_path"]}` [{r["doc_role"]}] workstream=`{r["workstream"]}` execution=`{r["execution_status"]}` authoritative=`{r["authoritative"]}`')
-    report += ['', '## Waiting / Blocked', '']
-    for r in waiting:
+    if not mainline_rows:
+        report.append('None.')
+    report += ['', '## Waiting / Blocked Active Work', '']
+    for r in waiting_blocked_mainline:
+        report.append(f'- `{r["doc_path"]}` [{r["doc_role"]}] workstream=`{r["workstream"]}` execution=`{r["execution_status"]}` authoritative=`{r["authoritative"]}`')
+    if not waiting_blocked_mainline:
+        report.append('None.')
+    other_title = '## Other Active Plans (Do Not Execute)' if execution_policy != 'parallel_workstreams' else '## Other Active Plans (Parallel Workstreams)'
+    report += ['', other_title, '']
+    for r in non_mainline_active:
+        report.append(f'- `{r["doc_path"]}` [{r["doc_role"]}] workstream=`{r["workstream"]}` execution=`{r["execution_status"]}` authoritative=`{r["authoritative"]}`')
+    if not non_mainline_active:
+        report.append('None.')
+    report += ['', '## Deferred Plans', '']
+    for r in deferred_rows:
         report.append(f'- `{r["doc_path"]}` lifecycle=`{r["lifecycle_status"]}` execution=`{r["execution_status"]}`')
+    if not deferred_rows:
+        report.append('None.')
+    report += ['', '## Governed References', '']
+    for r in governed_references:
+        report.append(f'- `{r["doc_path"]}` [{r["doc_role"]}] workstream=`{r["workstream"]}` execution=`{r["execution_status"]}` authoritative=`{r["authoritative"]}`')
+    if not governed_references:
+        report.append('None.')
     report += ['', '## Closed / Superseded', '']
     for r in closed:
         report.append(f'- `{r["doc_path"]}` lifecycle=`{r["lifecycle_status"]}` superseded_by=`{r["superseded_by"] or ""}`')
+    if not closed:
+        report.append('None.')
     report += ['', '## Quarantine', '']
     for line in quarantine_lines:
         report.append(f'- {line}')
+    if not quarantine_lines:
+        report.append('None.')
     out = repo_root / cfg.get('timeline_report_path', 'docs/plan_timeline_report.md')
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text('\n'.join(report).rstrip() + '\n', encoding='utf-8')
@@ -842,8 +1282,18 @@ def lint(repo_root: Path, cfg: dict[str, Any]) -> int:
     managed_keys = cfg.get('frontmatter', {}).get('managed_keys', [])
 
     seen_authoritative: dict[tuple[str, str], str] = {}
+    seen_plan_ids: dict[str, str] = {}
+    seen_doc_paths: set[str] = set()
     for r in rows:
         doc = repo_root / r['doc_path']
+        if r['plan_id'] in seen_plan_ids:
+            errors.append(f'duplicate plan_id: {r["plan_id"]} used by {seen_plan_ids[r["plan_id"]]} and {r["doc_path"]}')
+        else:
+            seen_plan_ids[r['plan_id']] = r['doc_path']
+        if r['doc_path'] in seen_doc_paths:
+            errors.append(f'duplicate doc_path in registry: {r["doc_path"]}')
+        else:
+            seen_doc_paths.add(r['doc_path'])
         if not doc.exists():
             errors.append(f'missing doc: {r["doc_path"]}')
         if r['lifecycle_status'] not in lifecycle_enums:
@@ -941,8 +1391,11 @@ def run_register(repo_root: Path, cfg: dict[str, Any], raw_path: str) -> int:
 
     classified = classify_candidate(candidate, cfg)
     today = date.today().isoformat()
-    row = registry_row_from_candidate(classified, 'manual', today)
+    row = registry_row_from_candidate(classified, 'manual', today, cfg=cfg)
     rows.append(row)
+    apply_revision_chain(rows)
+    mark_current_mainline_notes(rows, cfg)
+    infer_and_persist_repo_adaptation(repo_root, cfg, rows)
     write_registry_rows(repo_root, cfg, rows)
 
     managed_keys = cfg.get('frontmatter', {}).get('managed_keys', [])

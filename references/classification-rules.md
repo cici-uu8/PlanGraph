@@ -39,3 +39,16 @@ Transcript detection should not scan arbitrary body text for generic words such 
 - register: explicitly adds one named doc to the registry with `classification_source=manual`
 - quarantine threshold <= confidence < high threshold: write to quarantine list for human confirmation
 - confidence < quarantine threshold: ignore by default unless explicitly whitelisted
+
+## Lifecycle and mainline inference
+
+The classifier should stay generic. Do not hard-code one project's version labels or roadmap wording into the skill.
+
+Recommended generic inference rules:
+
+- treat obvious closeout language as a signal for `lifecycle_status=closed`
+- treat obvious future/backlog language as a signal for `lifecycle_status=deferred`
+- treat revision/version markers as hints for replacement chains, not as proof that a doc is future work
+- infer the current actionable mainline from explicit config first, then from stable signals such as authoritative active docs, mainline notes, or a single active master plan
+
+Names such as `v2`, `2.1`, `revised`, `updated`, or `final` are useful only as weak revision signals. They should not automatically mean "current", "future", or "deferred" without other evidence.
