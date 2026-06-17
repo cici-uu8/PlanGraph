@@ -1,0 +1,37 @@
+{
+  "name": "plan-governance",
+  "version": "0.2.0",
+  "description": "Lifecycle governance plugin for project planning documents in Codex.",
+  "author": {
+    "name": "cici-uu8",
+    "url": "https://github.com/cici-uu8"
+  },
+  "homepage": "https://github.com/cici-uu8/Plan-governance-Skill",
+  "repository": "https://github.com/cici-uu8/Plan-governance-Skill",
+  "license": "MIT",
+  "keywords": [
+    "plan-governance",
+    "codex-plugin",
+    "codex-skill",
+    "project-planning",
+    "documentation-governance"
+  ],
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Plan Governance",
+    "shortDescription": "Keep project plan docs governed and current.",
+    "longDescription": "Adopt plan governance in existing or new repositories, maintain a canonical plan registry, and keep plan lifecycle state aligned as plans are created, replaced, and closed.",
+    "developerName": "cici-uu8",
+    "category": "Productivity",
+    "capabilities": [
+      "Write",
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/cici-uu8/Plan-governance-Skill",
+    "brandColor": "#0F766E",
+    "defaultPrompt": [
+      "用 $plan-governance 接入分析这个仓库。",
+      "用 $plan-governance 启用计划治理。"
+    ]
+  }
+}
