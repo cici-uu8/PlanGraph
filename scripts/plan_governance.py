@@ -33,7 +33,7 @@ CONFIG_PATH = '.plangraph.yml'
 IGNORE_PATH = '.plangraph.ignore'
 INDEX_DIR = '.plangraph'
 INDEX_DB_PATH = '.plangraph/plangraph.db'
-INDEX_SCHEMA_VERSION = 2
+INDEX_SCHEMA_VERSION = 3
 MCP_PROTOCOL_VERSION = '2025-11-25'
 LEGACY_CONFIG_PATH = '.plan-governance.yml'
 LEGACY_IGNORE_PATH = '.plan-governance.ignore'
@@ -1748,6 +1748,63 @@ def registry_edges(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     return edges
 
 
+SEMANTIC_STOPWORDS = {
+    'the', 'and', 'for', 'with', 'from', 'that', 'this', 'plan', 'docs', 'doc',
+    '方案', '计划', '执行', '清单', '文档', '项目', '开发', '阶段', '当前',
+}
+
+
+def semantic_tokens(text: str) -> set[str]:
+    tokens = {
+        token.lower()
+        for token in re.findall(r'[A-Za-z0-9_]{3,}|[\u4e00-\u9fff]{2,}', text)
+    }
+    return {token for token in tokens if token not in SEMANTIC_STOPWORDS}
+
+
+def semantic_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(cfg.get('semantic', {}).get('enabled', False))
+
+
+def semantic_threshold(cfg: dict[str, Any]) -> float:
+    return float(cfg.get('semantic', {}).get('overlap_threshold', 0.35))
+
+
+def semantic_edges_for_rows(repo_root: Path, cfg: dict[str, Any], rows: list[dict[str, str]]) -> list[dict[str, Any]]:
+    threshold = semantic_threshold(cfg)
+    indexed: list[dict[str, Any]] = []
+    for row in rows:
+        doc_path = repo_root / row.get('doc_path', '')
+        body = doc_body(doc_path.read_text(encoding='utf-8', errors='ignore')) if doc_path.is_file() else ''
+        tokens = semantic_tokens(' '.join([row.get('title', ''), row.get('doc_path', ''), row.get('notes', ''), body]))
+        if len(tokens) < 3:
+            continue
+        indexed.append({'row': row, 'tokens': tokens})
+
+    edges: list[dict[str, Any]] = []
+    for i, source in enumerate(indexed):
+        for target in indexed[i + 1:]:
+            overlap = source['tokens'] & target['tokens']
+            denominator = min(len(source['tokens']), len(target['tokens']))
+            confidence = len(overlap) / denominator if denominator else 0.0
+            if confidence < threshold:
+                continue
+            source_row = source['row']
+            target_row = target['row']
+            shared_terms = sorted(overlap)[:12]
+            edges.append({
+                'source': source_row.get('plan_id', ''),
+                'target': target_row.get('plan_id', ''),
+                'kind': 'semantic_overlap',
+                'provenance': 'semantic-inferred',
+                'confidence': f'{confidence:.2f}',
+                'source_doc_path': source_row.get('doc_path', ''),
+                'target_doc_path': target_row.get('doc_path', ''),
+                'shared_terms': ','.join(shared_terms),
+            })
+    return edges
+
+
 def ensure_index_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         '''
@@ -1758,6 +1815,7 @@ def ensure_index_schema(conn: sqlite3.Connection) -> None:
         DROP TABLE IF EXISTS unresolved_refs;
         DROP TABLE IF EXISTS external_refs;
         DROP TABLE IF EXISTS node_fts;
+        DROP TABLE IF EXISTS semantic_edges;
 
         CREATE TABLE metadata (
             key TEXT PRIMARY KEY,
@@ -1838,6 +1896,18 @@ def ensure_index_schema(conn: sqlite3.Connection) -> None:
             doc_path,
             body,
             notes
+        );
+
+        CREATE TABLE semantic_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            target TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            provenance TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            source_doc_path TEXT NOT NULL,
+            target_doc_path TEXT NOT NULL,
+            shared_terms TEXT NOT NULL
         );
         '''
     )
@@ -2014,6 +2084,29 @@ def rebuild_sqlite_index(repo_root: Path, cfg: dict[str, Any]) -> dict[str, Any]
                 for row in rows
             ],
         )
+        if semantic_enabled(cfg):
+            conn.executemany(
+                '''
+                INSERT INTO semantic_edges (
+                    source, target, kind, provenance, confidence,
+                    source_doc_path, target_doc_path, shared_terms
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                [
+                    (
+                        item.get('source', ''),
+                        item.get('target', ''),
+                        item.get('kind', 'semantic_overlap'),
+                        item.get('provenance', 'semantic-inferred'),
+                        float(item.get('confidence', 0.0)),
+                        item.get('source_doc_path', ''),
+                        item.get('target_doc_path', ''),
+                        item.get('shared_terms', ''),
+                    )
+                    for item in semantic_edges_for_rows(repo_root, cfg, rows)
+                ],
+            )
 
     return sqlite_status(repo_root, cfg, rows=rows)
 
@@ -2085,6 +2178,7 @@ def sqlite_status(repo_root: Path, cfg: dict[str, Any], rows: list[dict[str, str
         'file_count': 0,
         'unresolved_count': 0,
         'external_reference_count': 0,
+        'semantic_edge_count': 0,
         'registry_row_count': len(registry_rows),
         'stale_files': [],
         'errors': errors,
@@ -2103,6 +2197,10 @@ def sqlite_status(repo_root: Path, cfg: dict[str, Any], rows: list[dict[str, str
             result['file_count'] = sqlite_table_count(conn, 'files')
             result['unresolved_count'] = sqlite_table_count(conn, 'unresolved_refs')
             result['external_reference_count'] = sqlite_table_count(conn, 'external_refs')
+            try:
+                result['semantic_edge_count'] = sqlite_table_count(conn, 'semantic_edges')
+            except sqlite3.DatabaseError:
+                result['semantic_edge_count'] = 0
             stale, stale_files = index_staleness(conn, repo_root, cfg, registry_rows)
             result['stale'] = stale or schema_version != str(INDEX_SCHEMA_VERSION) or bool(errors)
             result['stale_files'] = stale_files
@@ -2151,6 +2249,7 @@ def sqlite_query(repo_root: Path, cfg: dict[str, Any], text: str) -> dict[str, A
 
     db_path = index_db_path(repo_root, cfg)
     results: list[dict[str, Any]] = []
+    semantic_results: list[dict[str, Any]] = []
     seen: set[str] = set()
     try:
         with sqlite3.connect(db_path) as conn:
@@ -2189,6 +2288,28 @@ def sqlite_query(repo_root: Path, cfg: dict[str, Any], text: str) -> dict[str, A
                     'doc_path': str(row[2]),
                     'match_source': match_source,
                 })
+            try:
+                semantic_rows = conn.execute(
+                    '''
+                    SELECT source, target, confidence, source_doc_path, target_doc_path, shared_terms
+                    FROM semantic_edges
+                    ORDER BY confidence DESC, id ASC
+                    LIMIT 20
+                    '''
+                ).fetchall()
+            except sqlite3.DatabaseError:
+                semantic_rows = []
+            for row in semantic_rows:
+                semantic_results.append({
+                    'source': str(row[0]),
+                    'target': str(row[1]),
+                    'kind': 'semantic_overlap',
+                    'provenance': 'semantic-inferred',
+                    'confidence': float(row[2]),
+                    'source_doc_path': str(row[3]),
+                    'target_doc_path': str(row[4]),
+                    'shared_terms': str(row[5]),
+                })
     except sqlite3.DatabaseError as exc:
         return {
             'query': 'query',
@@ -2206,6 +2327,8 @@ def sqlite_query(repo_root: Path, cfg: dict[str, Any], text: str) -> dict[str, A
         'stale': False,
         'count': len(results),
         'results': results,
+        'semantic_results': semantic_results,
+        'semantic_count': len(semantic_results),
         'status': status,
     }
 
@@ -2226,6 +2349,28 @@ def run_sync(repo_root: Path, cfg: dict[str, Any]) -> int:
         print(json.dumps({'query': 'sync', 'action': 'rebuilt', 'status': rebuilt}, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     print(json.dumps({'query': 'sync', 'action': 'noop', 'status': status}, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
+def run_semantic(repo_root: Path, cfg: dict[str, Any]) -> int:
+    semantic_cfg = deep_merge(cfg, {'semantic': {'enabled': True}})
+    status = rebuild_sqlite_index(repo_root, semantic_cfg)
+    if 'error' in status:
+        result = {'query': 'semantic', 'error': status['error'], 'status': status}
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 1
+    result = {
+        'query': 'semantic',
+        'enabled': True,
+        'provenance': 'semantic-inferred',
+        'semantic_edge_count': status.get('semantic_edge_count', 0),
+        'status': status,
+        'notes': [
+            'Semantic edges are soft hints only.',
+            'They do not update the registry and do not participate in fatal lint.',
+        ],
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
 
@@ -3137,7 +3282,7 @@ def run_refresh(repo_root: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['init', 'bootstrap', 'refresh', 'register', 'graph', 'index', 'status', 'sync', 'query', 'mcp', 'lint', 'report', 'adopt-external-references', 'install-agents-block', 'remove-agents-block', 'close', 'supersede'])
+    parser.add_argument('command', choices=['init', 'bootstrap', 'refresh', 'register', 'graph', 'index', 'status', 'sync', 'query', 'semantic', 'mcp', 'lint', 'report', 'adopt-external-references', 'install-agents-block', 'remove-agents-block', 'close', 'supersede'])
     parser.add_argument('ids', nargs='*')
     parser.add_argument('--repo-root', default=os.getcwd())
     parser.add_argument('--lifecycle-status', default='closed')
@@ -3181,6 +3326,10 @@ def main() -> int:
             return 2
         cfg = load_effective_config(repo_root)
         return run_query(repo_root, cfg, ' '.join(args.ids))
+
+    if args.command == 'semantic':
+        cfg = load_effective_config(repo_root)
+        return run_semantic(repo_root, cfg)
 
     if args.command == 'mcp':
         cfg = load_effective_config(repo_root)

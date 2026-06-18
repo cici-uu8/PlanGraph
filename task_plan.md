@@ -22,6 +22,7 @@ Move the repository public surface into a standalone `plangraph` product context
 | 12. Add external-reference adoption workflow | complete | dry-run/apply command localized useful external Markdown refs in a real repo; post-apply graph had edge=9, unresolved=0, external=4 |
 | 13. Start v0.4 SQLite index | in progress | `index` creates `.plangraph/plangraph.db`; `status` reports schema/count/staleness; tests cover stale registry and scan exclusion |
 | 14. Start v0.5 MCP server | in progress | `mcp` stdio server handles `initialize`, `tools/list`, and `tools/call` for status/mainline/query |
+| 15. Start v0.6 semantic soft edges | in progress | explicit `semantic` command writes `semantic-inferred` overlap hints to local SQLite only |
 
 ## Acceptance Criteria
 
@@ -46,4 +47,4 @@ Move the repository public surface into a standalone `plangraph` product context
 - External-reference adoption is complete for the current v0.3.x line: `adopt-external-references --apply` localized 4 useful external Markdown refs into the oncall plan-update repo, rewrote links, registered imported docs as non-authoritative governed context, and improved body-links from `edge_count=1 / unresolved_count=8` to `edge_count=9 / unresolved_count=0 / external_reference_count=4`.
 - Current release decision: freeze the deterministic `v0.3.x` line at `v0.3.2`; do not tag `v0.4.0` until SQLite reaches a coherent release boundary.
 - User decision on 2026-06-18 overrides the prior external-validation gate: proceed locally into SQLite / MCP / semantic layer without another repository validation pass, but keep registry as the source of truth and keep each stage separately testable.
-- Semantic edges and embedding-backed conflict detection are not implemented.
+- Semantic soft edges have a local explicit first slice; embedding-backed conflict detection is not implemented.

@@ -685,8 +685,16 @@ Stop / Go：
 
 验收：
 
-- 软边和硬边在输出中明确分离
+- 软边和硬边在输出中明确分离（已完成第一版）
+- `semantic-inferred` soft edge 不写 registry、不参与 fatal lint（已完成第一版）
 - 无 API key 时核心功能仍可用
+
+当前状态：
+
+- 第一段本地语义层已完成：`semantic` 命令显式启用 deterministic token-overlap soft edge extraction，并写入 SQLite `semantic_edges` 表。
+- 默认 `index` 不生成 semantic edges；用户必须显式运行 `semantic` 或未来设置配置。
+- 当前语义层不是 embedding，也不是 possible conflict 判定；只提供 `semantic_overlap` 软提示，带 `confidence`、`provenance=semantic-inferred` 和 `shared_terms`。
+- 真实 oncall plan-update 仓库 smoke：显式 `semantic` 生成 `semantic_edge_count=42`，`status` 显示 `schema_version=3`、`stale=false`。
 
 Stop / Go：
 
@@ -725,7 +733,7 @@ Stop / Go：
 1. 保持 `v0.3.x` 确定性能力稳定：graph conflicts、去 PyYAML 依赖、CI lint 样例、只读正文链接抽取、external-reference classification、adoption apply 和真实仓库治理收口不能回退。
 2. 完成 SQLite 底座：`index`、`status`、`sync`、`query`、stale detection、schema versioning、`.plangraph/` scan exclusion 已完成第一版，后续补更稳定的 context 查询入口。
 3. SQLite 已形成最小稳定读取接口，下一步进入 MCP：先让 MCP 读取索引和现有 graph 查询，不让 MCP 成为新的真源。
-4. 语义层始终晚于硬边和索引层，并且默认关闭；soft edge 必须和 hard edge 分开存储、分开展示。
+4. 语义层第一版已进入本地实验：`semantic` 显式生成 soft edge，默认关闭，和 hard edge 分开存储、分开展示；后续如果要做 embedding / possible conflict，必须另设评测口径。
 5. 本地开发期间可以持续 git commit，但不推 GitHub；等 SQLite / MCP / 语义层达到完整边界后再统一发布。
 
 这条路线保留成熟目标，也承认当前项目目标已经从 `v0.3` 稳定版推进到更完整的 PlanGraph 产品形态。
