@@ -16,9 +16,10 @@ The current implementation is deterministic and registry-driven. It uses:
 3. `docs/plan_adoption_report.md` as a read-only first-pass report for existing repos.
 4. `.plangraph.yml` and `.plangraph.ignore` as the current config files.
 5. in-memory graph queries for mainline, lineage, impact, conflicts, and body links.
-6. optional local SQLite indexing under `.plangraph/plangraph.db` for persisted graph status and future MCP support.
+6. optional local SQLite indexing under `.plangraph/plangraph.db` for persisted graph status and MCP reads.
+7. an optional stdio MCP server for read-only status, mainline, query, lineage, impact, conflicts, and body-link tools.
 
-MCP server support and semantic edges are planned phases. SQLite indexing is a derived cache and does not replace the registry as the source of truth.
+SQLite indexing, MCP reads, and semantic soft edges are derived layers. They do not replace the registry as the source of truth.
 
 After installation, users should normally invoke this skill through natural-language requests in Codex, not by typing script paths manually. The Python commands shown below are implementation details the skill may use when deterministic file updates or graph queries are needed.
 
@@ -248,9 +249,9 @@ Outside-repo local Markdown links are reported as `external_reference` context i
 
 After adopting external references, run `graph body-links` again. Use `index` to build the local SQLite cache when persisted graph status, future MCP reads, or multi-agent read stability matter. Use `status` to check whether the cache exists and whether it is stale after registry or plan-document changes. Use `sync` to rebuild missing, stale, or old-schema indexes. Use `query` for SQLite-backed text search over indexed plan titles, paths, bodies, and notes.
 
-Use `mcp` only when a host wants a stdio MCP server. The first MCP layer exposes read-only status, mainline, and query tools. It does not replace the CLI or registry.
+Use `mcp` only when a host wants a stdio MCP server. The MCP layer exposes read-only status, mainline, query, lineage, impact, conflicts, and body-link tools. It does not replace the CLI or registry.
 
-Use `semantic` only as an explicit advanced operation. It builds `semantic-inferred` soft edges in the local SQLite cache, never writes them to the registry, and never makes them fatal lint errors.
+Use `semantic` only as an explicit advanced operation. It builds `semantic-inferred` soft edges in the local SQLite cache, never writes them to the registry, and never makes them fatal lint errors. Ordinary `query` output must stay deterministic text search and must not include `semantic_results` by default. `semantic` should prioritize high-confidence pairs that have no direct registry hard relation and are not in the same workstream, so it surfaces likely incremental context rather than repeating known hard edges.
 
 ### 5. Close or supersede a plan
 

@@ -155,7 +155,7 @@ class GovernanceCommandTests(unittest.TestCase):
             indexed_data = json.loads(indexed.stdout)
             self.assertTrue(indexed_data['exists'])
             self.assertFalse(indexed_data['stale'])
-            self.assertEqual(indexed_data['schema_version'], '3')
+            self.assertEqual(indexed_data['schema_version'], '4')
             self.assertEqual(indexed_data['node_count'], 2)
             self.assertGreaterEqual(indexed_data['edge_count'], 1)
             self.assertEqual(indexed_data['unresolved_count'], 0)
@@ -255,7 +255,7 @@ class GovernanceCommandTests(unittest.TestCase):
             synced = run_cli(root, 'sync')
             synced_data = json.loads(synced.stdout)
             self.assertEqual(synced_data['action'], 'rebuilt')
-            self.assertEqual(synced_data['status']['schema_version'], '3')
+            self.assertEqual(synced_data['status']['schema_version'], '4')
 
     def test_query_uses_sqlite_index(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -329,6 +329,10 @@ class GovernanceCommandTests(unittest.TestCase):
             self.assertIn('plangraph_status', tool_names)
             self.assertIn('plangraph_mainline', tool_names)
             self.assertIn('plangraph_query', tool_names)
+            self.assertIn('plangraph_lineage', tool_names)
+            self.assertIn('plangraph_impact', tool_names)
+            self.assertIn('plangraph_conflicts', tool_names)
+            self.assertIn('plangraph_body_links', tool_names)
             call_payload = json.loads(messages[2]['result']['content'][0]['text'])
             self.assertEqual(call_payload['query'], 'query')
             self.assertEqual(call_payload['count'], 1)
@@ -342,11 +346,11 @@ class GovernanceCommandTests(unittest.TestCase):
             write_minimal_repo_config(root)
             run_cli(root, 'bootstrap', '--skip-install-agents-block')
             (docs / 'rag_plan_a.md').write_text(
-                '# RAG Retrieval Plan A\n\nretrieval ladder rerank corpus evaluation alpha beta gamma.\n',
+                '---\nworkstream: retrieval-a\n---\n# RAG Retrieval Plan A\n\nretrieval ladder rerank corpus evaluation alpha beta gamma.\n',
                 encoding='utf-8',
             )
             (docs / 'rag_plan_b.md').write_text(
-                '# RAG Retrieval Plan B\n\nretrieval ladder rerank corpus evaluation alpha beta delta.\n',
+                '---\nworkstream: retrieval-b\n---\n# RAG Retrieval Plan B\n\nretrieval ladder rerank corpus evaluation alpha beta delta.\n',
                 encoding='utf-8',
             )
             run_cli(root, 'register', 'docs/rag_plan_a.md')
@@ -354,7 +358,7 @@ class GovernanceCommandTests(unittest.TestCase):
 
             indexed = run_cli(root, 'index')
             indexed_data = json.loads(indexed.stdout)
-            self.assertEqual(indexed_data['schema_version'], '3')
+            self.assertEqual(indexed_data['schema_version'], '4')
             self.assertEqual(indexed_data['semantic_edge_count'], 0)
 
             semantic = run_cli(root, 'semantic')
@@ -365,9 +369,37 @@ class GovernanceCommandTests(unittest.TestCase):
 
             query = run_cli(root, 'query', 'retrieval')
             query_data = json.loads(query.stdout)
-            self.assertGreaterEqual(query_data['semantic_count'], 1)
-            self.assertEqual(query_data['semantic_results'][0]['kind'], 'semantic_overlap')
-            self.assertEqual(query_data['semantic_results'][0]['provenance'], 'semantic-inferred')
+            self.assertNotIn('semantic_results', query_data)
+            self.assertNotIn('semantic_count', query_data)
+
+            self.assertGreaterEqual(semantic_data['semantic_edge_count'], 1)
+            self.assertEqual(semantic_data['semantic_results'][0]['kind'], 'semantic_overlap')
+            self.assertEqual(semantic_data['semantic_results'][0]['provenance'], 'semantic-inferred')
+            self.assertEqual(semantic_data['semantic_results'][0]['relation_scope'], 'registry-zero-relation')
+
+    def test_semantic_edges_ignore_same_workstream_overlap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            write_minimal_repo_config(root)
+            run_cli(root, 'bootstrap', '--skip-install-agents-block')
+            (docs / 'rag_plan_a.md').write_text(
+                '---\nworkstream: retrieval\n---\n# RAG Retrieval Plan A\n\nretrieval ladder rerank corpus evaluation alpha beta gamma.\n',
+                encoding='utf-8',
+            )
+            (docs / 'rag_plan_b.md').write_text(
+                '---\nworkstream: retrieval\n---\n# RAG Retrieval Plan B\n\nretrieval ladder rerank corpus evaluation alpha beta delta.\n',
+                encoding='utf-8',
+            )
+            run_cli(root, 'register', 'docs/rag_plan_a.md')
+            run_cli(root, 'register', 'docs/rag_plan_b.md')
+
+            semantic = run_cli(root, 'semantic')
+            semantic_data = json.loads(semantic.stdout)
+
+            self.assertEqual(semantic_data['semantic_edge_count'], 0)
+            self.assertEqual(semantic_data['semantic_results'], [])
 
     def test_register_close_and_supersede_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:

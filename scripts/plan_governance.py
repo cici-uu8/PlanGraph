@@ -33,7 +33,7 @@ CONFIG_PATH = '.plangraph.yml'
 IGNORE_PATH = '.plangraph.ignore'
 INDEX_DIR = '.plangraph'
 INDEX_DB_PATH = '.plangraph/plangraph.db'
-INDEX_SCHEMA_VERSION = 3
+INDEX_SCHEMA_VERSION = 4
 MCP_PROTOCOL_VERSION = '2025-11-25'
 LEGACY_CONFIG_PATH = '.plan-governance.yml'
 LEGACY_IGNORE_PATH = '.plan-governance.ignore'
@@ -1770,8 +1770,22 @@ def semantic_threshold(cfg: dict[str, Any]) -> float:
     return float(cfg.get('semantic', {}).get('overlap_threshold', 0.35))
 
 
+def semantic_hard_relation_pairs(rows: list[dict[str, str]]) -> set[tuple[str, str]]:
+    pairs: set[tuple[str, str]] = set()
+    for item in registry_edges(rows):
+        if item.get('kind') == 'part_of_workstream':
+            continue
+        source = item.get('source', '')
+        target = item.get('target', '')
+        if source and target:
+            pairs.add((source, target))
+            pairs.add((target, source))
+    return pairs
+
+
 def semantic_edges_for_rows(repo_root: Path, cfg: dict[str, Any], rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     threshold = semantic_threshold(cfg)
+    hard_relation_pairs = semantic_hard_relation_pairs(rows)
     indexed: list[dict[str, Any]] = []
     for row in rows:
         doc_path = repo_root / row.get('doc_path', '')
@@ -1791,12 +1805,21 @@ def semantic_edges_for_rows(repo_root: Path, cfg: dict[str, Any], rows: list[dic
                 continue
             source_row = source['row']
             target_row = target['row']
+            source_id = source_row.get('plan_id', '')
+            target_id = target_row.get('plan_id', '')
+            if (source_id, target_id) in hard_relation_pairs:
+                continue
+            source_workstream = source_row.get('workstream', '').strip()
+            target_workstream = target_row.get('workstream', '').strip()
+            if not source_workstream or not target_workstream or source_workstream == target_workstream:
+                continue
             shared_terms = sorted(overlap)[:12]
             edges.append({
-                'source': source_row.get('plan_id', ''),
-                'target': target_row.get('plan_id', ''),
+                'source': source_id,
+                'target': target_id,
                 'kind': 'semantic_overlap',
                 'provenance': 'semantic-inferred',
+                'relation_scope': 'registry-zero-relation',
                 'confidence': f'{confidence:.2f}',
                 'source_doc_path': source_row.get('doc_path', ''),
                 'target_doc_path': target_row.get('doc_path', ''),
@@ -1904,6 +1927,7 @@ def ensure_index_schema(conn: sqlite3.Connection) -> None:
             target TEXT NOT NULL,
             kind TEXT NOT NULL,
             provenance TEXT NOT NULL,
+            relation_scope TEXT NOT NULL,
             confidence REAL NOT NULL,
             source_doc_path TEXT NOT NULL,
             target_doc_path TEXT NOT NULL,
@@ -2088,10 +2112,10 @@ def rebuild_sqlite_index(repo_root: Path, cfg: dict[str, Any]) -> dict[str, Any]
             conn.executemany(
                 '''
                 INSERT INTO semantic_edges (
-                    source, target, kind, provenance, confidence,
+                    source, target, kind, provenance, relation_scope, confidence,
                     source_doc_path, target_doc_path, shared_terms
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
                 [
                     (
@@ -2099,6 +2123,7 @@ def rebuild_sqlite_index(repo_root: Path, cfg: dict[str, Any]) -> dict[str, Any]
                         item.get('target', ''),
                         item.get('kind', 'semantic_overlap'),
                         item.get('provenance', 'semantic-inferred'),
+                        item.get('relation_scope', 'registry-zero-relation'),
                         float(item.get('confidence', 0.0)),
                         item.get('source_doc_path', ''),
                         item.get('target_doc_path', ''),
@@ -2249,7 +2274,6 @@ def sqlite_query(repo_root: Path, cfg: dict[str, Any], text: str) -> dict[str, A
 
     db_path = index_db_path(repo_root, cfg)
     results: list[dict[str, Any]] = []
-    semantic_results: list[dict[str, Any]] = []
     seen: set[str] = set()
     try:
         with sqlite3.connect(db_path) as conn:
@@ -2288,28 +2312,6 @@ def sqlite_query(repo_root: Path, cfg: dict[str, Any], text: str) -> dict[str, A
                     'doc_path': str(row[2]),
                     'match_source': match_source,
                 })
-            try:
-                semantic_rows = conn.execute(
-                    '''
-                    SELECT source, target, confidence, source_doc_path, target_doc_path, shared_terms
-                    FROM semantic_edges
-                    ORDER BY confidence DESC, id ASC
-                    LIMIT 20
-                    '''
-                ).fetchall()
-            except sqlite3.DatabaseError:
-                semantic_rows = []
-            for row in semantic_rows:
-                semantic_results.append({
-                    'source': str(row[0]),
-                    'target': str(row[1]),
-                    'kind': 'semantic_overlap',
-                    'provenance': 'semantic-inferred',
-                    'confidence': float(row[2]),
-                    'source_doc_path': str(row[3]),
-                    'target_doc_path': str(row[4]),
-                    'shared_terms': str(row[5]),
-                })
     except sqlite3.DatabaseError as exc:
         return {
             'query': 'query',
@@ -2327,8 +2329,6 @@ def sqlite_query(repo_root: Path, cfg: dict[str, Any], text: str) -> dict[str, A
         'stale': False,
         'count': len(results),
         'results': results,
-        'semantic_results': semantic_results,
-        'semantic_count': len(semantic_results),
         'status': status,
     }
 
@@ -2359,14 +2359,43 @@ def run_semantic(repo_root: Path, cfg: dict[str, Any]) -> int:
         result = {'query': 'semantic', 'error': status['error'], 'status': status}
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 1
+    semantic_results: list[dict[str, Any]] = []
+    db_path = index_db_path(repo_root, semantic_cfg)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            semantic_rows = conn.execute(
+                '''
+                SELECT source, target, kind, provenance, relation_scope, confidence,
+                    source_doc_path, target_doc_path, shared_terms
+                FROM semantic_edges
+                ORDER BY confidence DESC, id ASC
+                LIMIT 20
+                '''
+            ).fetchall()
+    except sqlite3.DatabaseError:
+        semantic_rows = []
+    for row in semantic_rows:
+        semantic_results.append({
+            'source': str(row[0]),
+            'target': str(row[1]),
+            'kind': str(row[2]),
+            'provenance': str(row[3]),
+            'relation_scope': str(row[4]),
+            'confidence': float(row[5]),
+            'source_doc_path': str(row[6]),
+            'target_doc_path': str(row[7]),
+            'shared_terms': str(row[8]),
+        })
     result = {
         'query': 'semantic',
         'enabled': True,
         'provenance': 'semantic-inferred',
         'semantic_edge_count': status.get('semantic_edge_count', 0),
+        'semantic_results': semantic_results,
         'status': status,
         'notes': [
             'Semantic edges are soft hints only.',
+            'They prioritize high-confidence pairs without direct registry relations and outside the same workstream.',
             'They do not update the registry and do not participate in fatal lint.',
         ],
     }
@@ -2408,6 +2437,50 @@ def mcp_tools() -> list[dict[str, Any]]:
                 'additionalProperties': False,
             },
         },
+        {
+            'name': 'plangraph_lineage',
+            'description': 'Return registry-backed supersession lineage for one plan.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'plan_id': {'type': 'string'},
+                },
+                'required': ['plan_id'],
+                'additionalProperties': False,
+            },
+        },
+        {
+            'name': 'plangraph_impact',
+            'description': 'Return registry-backed plans that may be affected by changing one plan.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'plan_id': {'type': 'string'},
+                },
+                'required': ['plan_id'],
+                'additionalProperties': False,
+            },
+        },
+        {
+            'name': 'plangraph_conflicts',
+            'description': 'Return deterministic registry-derived planning conflicts.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {},
+                'additionalProperties': False,
+            },
+        },
+        {
+            'name': 'plangraph_body_links',
+            'description': 'Return explicit Markdown body-link edges, unresolved refs, and external references.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'plan_id': {'type': 'string'},
+                },
+                'additionalProperties': False,
+            },
+        },
     ]
 
 
@@ -2437,6 +2510,21 @@ def mcp_call_tool(repo_root: Path, cfg: dict[str, Any], name: str, arguments: di
         if not text:
             return mcp_result({'error': 'text is required', 'query': 'query'})
         return mcp_result(sqlite_query(repo_root, cfg, text))
+    if name in {'plangraph_lineage', 'plangraph_impact', 'plangraph_conflicts', 'plangraph_body_links'}:
+        graph = load_graph(repo_root, cfg)
+        if graph is None:
+            return mcp_result({'error': 'registry missing', 'query': name.removeprefix('plangraph_').replace('_', '-')})
+        if name == 'plangraph_conflicts':
+            return mcp_result(graph.conflicts())
+        if name == 'plangraph_body_links':
+            plan_id = str(arguments.get('plan_id', '')).strip() or None
+            return mcp_result(graph.body_links(plan_id))
+        plan_id = str(arguments.get('plan_id', '')).strip()
+        if not plan_id:
+            return mcp_result({'error': 'plan_id is required', 'query': name.removeprefix('plangraph_')})
+        if name == 'plangraph_lineage':
+            return mcp_result(graph.lineage(plan_id))
+        return mcp_result(graph.impact(plan_id))
     return mcp_result({'error': f'unknown tool: {name}'})
 
 

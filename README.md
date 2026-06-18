@@ -95,8 +95,11 @@ PlanGraph currently focuses on the deterministic foundation:
 - lint rules for registry and lifecycle consistency
 - in-memory graph queries for mainline, lineage, impact, deterministic conflicts, explicit Markdown body links, and outside-repo external references
 - dry-run/apply adoption for useful external Markdown references
+- local SQLite indexing for status, sync, FTS query, and stable read caches
+- a read-only stdio MCP server for status, mainline, query, lineage, impact, conflicts, and body-links
+- explicit semantic soft-edge extraction for high-confidence cross-workstream, registry-zero-relation overlaps
 
-SQLite indexing, MCP server support, and semantic edges are planned phases, not required for the current local-first skill workflow. Body-link extraction is available as a read-only graph query. Real-repo validation has shown that outside-repo links should first be classified as external references, not rushed into SQLite.
+SQLite, MCP, and semantic edges are derived layers. The registry remains the source of truth; ordinary `query` stays deterministic text search, and semantic results are exposed only through the explicit `semantic` command.
 
 ## How It Works After Enablement
 

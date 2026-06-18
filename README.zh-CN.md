@@ -95,8 +95,11 @@ PlanGraph 当前先聚焦确定性基础：
 - registry 和生命周期一致性 lint
 - mainline、lineage、impact、确定性 conflicts、显式 Markdown 正文链接和 repo 外部引用的内存图谱查询
 - 对有价值的外部 Markdown 引用做 dry-run / apply 本地化接入
+- 本地 SQLite 索引，用于 status、sync、FTS query 和稳定读取缓存
+- 只读 stdio MCP server，提供 status、mainline、query、lineage、impact、conflicts 和 body-links 工具
+- 显式 semantic 软边抽取，只展示高置信、跨 workstream、registry 无直接硬关系的相似计划
 
-SQLite 索引、MCP server 和语义边是后续阶段，不是当前本地 skill 工作流的前置条件。正文链接抽取已经作为只读 graph query 提供。真实仓库验证已经说明：repo 外链接应该先被分类为 external references，而不是急着进入 SQLite。
+SQLite、MCP 和 semantic edges 都是派生层。Registry 仍是真源；普通 `query` 保持确定性文本搜索，不默认混入 semantic 结果，语义软边只通过显式 `semantic` 命令输出。
 
 ## 启用后如何工作
 

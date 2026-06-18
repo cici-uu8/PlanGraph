@@ -349,7 +349,7 @@ PlanGraph 不应随意声称冲突。冲突应分层：
 
 这份文档是 PlanGraph 的总主线，不是只管当前一小段的临时计划。
 
-当前执行阶段是 `v0.4 SQLite` 本地开发：`v0.2.1` 稳定化和 `v0.3.x` 确定性增强已经完成，硬冲突查询、PyYAML fallback、CI lint 模板、只读正文链接抽取、外部引用分类和 external-reference adoption 已进入测试或真实仓库验证保护。`v0.3.x` 可冻结在 `v0.3.2`；从 2026-06-18 起，项目按用户决策直接继续进入 SQLite、MCP 和语义层开发，但先只做本地 git 提交，不推 GitHub，直到长期主线开发到更完整边界。
+当前执行阶段是 `v0.4 SQLite` / `v0.5 MCP` / `v0.6 语义层` 的本地产品底座开发：`v0.2.1` 稳定化和 `v0.3.x` 确定性增强已经完成，硬冲突查询、PyYAML fallback、CI lint 模板、只读正文链接抽取、外部引用分类和 external-reference adoption 已进入测试或真实仓库验证保护。`v0.3.x` 曾冻结在 `v0.3.2`；从 2026-06-18 起，作者主动解冻本地开发，继续验证 SQLite、MCP 和语义层这些产品底座能力。这个解冻不是外部 reviewer 要求，也不改变公开发布门禁：先只做本地 git 提交，不推 GitHub，直到长期主线开发到更完整边界。
 
 每完成一阶段，都按 `test -> release/tag -> verify -> promote` 的顺序推进。后续阶段不关闭，只是要等前一阶段通过门禁后再进入。
 
@@ -358,9 +358,9 @@ PlanGraph 不应随意声称冲突。冲突应分层：
 | `v0.2` | 基础可用版 | 公共入口重命名、确定性 registry 驱动核心、测试基建、图查询内核 | 公开安装、扫描、查询链路可用 |
 | `v0.2.1` | 已完成稳定化阶段 | 稳定化、兼容性、回归测试、公开入口清理 | 现有能力无回归，公开入口与元数据一致 |
 | `v0.3.x` | 可冻结阶段 | graph conflicts、正文链接抽取、CI lint 样例、去 PyYAML 依赖、external-reference adoption | 硬边、冲突告警、外部引用本地化在真实仓库可验证 |
-| `SQLite` | `v0.4` 当前本地开发 | 本地索引、增量 sync、status、FTS、索引失效提示 | 查询/服务体验明显优于纯内存图 |
-| `MCP` | `v0.5` | `serve`、`install`、`uninstall`、workspace discovery | 至少一种宿主能低门槛接入 |
-| `语义层` | `v0.6` | 可选 embedding、soft edge、possible conflict | 默认关闭，且必须带 provenance 和 confidence |
+| `SQLite` | `v0.4` 当前本地开发 | 本地索引、sync、status、FTS、索引失效提示、semantic-edge cache | 查询/服务体验明显优于纯内存图 |
+| `MCP` | `v0.5` 当前本地开发 | read-only status、mainline、query、lineage、impact、conflicts、body-links | 至少一种宿主能低门槛接入 |
+| `语义层` | `v0.6` 当前本地开发 | explicit semantic command、registry-zero-relation soft edge、future embedding | 默认关闭，且必须带 provenance、confidence 和 relation_scope |
 | `1.0` | 冻结版 | 稳定分发、稳定依赖、成熟默认行为 | 所有门禁通过，后续只做兼容性维护 |
 
 ### Validation Track：贯穿全程的现实检验
@@ -611,6 +611,8 @@ Stop / Go：
 - `status` 是只读命令，报告 `db_path`、`exists`、`stale`、`schema_version`、`node_count`、`edge_count`、`file_count`、`unresolved_count`、`external_reference_count` 和 `registry_row_count`。
 - `sync` 会在索引 missing、stale 或 schema 过期时全量重建；当前先用可理解的全量 rebuild，后续再优化增量。
 - `query <text>` 会拒绝 stale index，并通过 `node_fts` 查询 indexed title/path/body/notes。
+- 普通 `query` 不混入 `semantic_results`；语义软边只通过显式 `semantic` 命令输出。
+- schema version 4 为 `semantic_edges` 增加 `relation_scope`，旧 schema 会触发 `sync` 重建。
 - 索引仍是派生缓存，registry/frontmatter/body links 仍是真源。
 - 真实 oncall plan-update 仓库 smoke：`node_count=54`、`edge_count=69`、`file_count=57`、`unresolved_count=0`、`external_reference_count=4`、`stale=false`。
 - 真实 oncall plan-update query smoke：`query RAG` 返回 20 条 FTS 结果，`sync` 在 schema 2 后为 `action=noop`。
@@ -649,7 +651,7 @@ Stop / Go：
 
 当前状态：
 
-- 第一段本地 MCP 已完成：`mcp` 命令以 stdio JSON-RPC 方式暴露 `plangraph_status`、`plangraph_mainline`、`plangraph_query`。
+- 第一段本地 MCP 已完成：`mcp` 命令以 stdio JSON-RPC 方式暴露 `plangraph_status`、`plangraph_mainline`、`plangraph_query`、`plangraph_lineage`、`plangraph_impact`、`plangraph_conflicts` 和 `plangraph_body_links`。
 - MCP 只复用已有 SQLite/graph 查询，不引入新的真源。
 - 宿主安装、卸载、workspace discovery 尚未完成。
 
@@ -693,8 +695,10 @@ Stop / Go：
 
 - 第一段本地语义层已完成：`semantic` 命令显式启用 deterministic token-overlap soft edge extraction，并写入 SQLite `semantic_edges` 表。
 - 默认 `index` 不生成 semantic edges；用户必须显式运行 `semantic` 或未来设置配置。
-- 当前语义层不是 embedding，也不是 possible conflict 判定；只提供 `semantic_overlap` 软提示，带 `confidence`、`provenance=semantic-inferred` 和 `shared_terms`。
-- 真实 oncall plan-update 仓库 smoke：显式 `semantic` 生成 `semantic_edge_count=42`，`status` 显示 `schema_version=3`、`stale=false`。
+- 普通 `query` 不再默认混入 semantic 结果，避免把软推断伪装成确定性搜索结果。
+- 当前语义层不是 embedding，也不是 possible conflict 判定；只提供 `semantic_overlap` 软提示，带 `confidence`、`provenance=semantic-inferred`、`relation_scope=registry-zero-relation` 和 `shared_terms`。
+- semantic 的真实增量判据是：优先展示 registry 没有直接硬关系、且不在同一个 workstream 的高置信相似边；同 workstream sibling 和已有 hard edge 不作为优先 semantic 结果。
+- 真实 oncall plan-update 仓库 smoke：按增量判据过滤后，显式 `semantic` 生成 `semantic_edge_count=1`，`status` 显示 `schema_version=4`、`stale=false`；普通 `query RAG` 返回 20 条 FTS 结果且不包含 `semantic_results`。
 
 Stop / Go：
 
