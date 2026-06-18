@@ -101,6 +101,12 @@ PlanGraph currently focuses on the deterministic foundation:
 
 SQLite, MCP, and semantic edges are derived layers. The registry remains the source of truth; ordinary `query` stays deterministic text search, and semantic results are exposed only through the explicit `semantic` command.
 
+## Release Surface
+
+The supported public surface is the deterministic PlanGraph workflow: adoption scan, bootstrap, registry maintenance, lifecycle lint, and graph queries for mainline, lineage, impact, conflicts, body links, and external references.
+
+SQLite, MCP, and semantic soft edges are local experimental product-foundation layers. They are useful for validating a more mature CodeGraph-like experience, but they should not be treated as the stable public API yet. In particular, semantic output is intentionally explicit and sparse: on the real validation repo, filtering reduced 42 raw overlap candidates to 1 registry-zero-relation cross-workstream edge.
+
 ## How It Works After Enablement
 
 Once `docs/plan_registry.md` exists, the repo is considered governed.
