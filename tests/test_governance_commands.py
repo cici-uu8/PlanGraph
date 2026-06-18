@@ -159,6 +159,27 @@ class GovernanceCommandTests(unittest.TestCase):
             self.assertEqual(data['derivation'], 'auto-derived')
             self.assertIn('not manually pinned', data['notes'])
 
+    def test_lint_reports_unresolved_body_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            write_minimal_repo_config(root)
+            run_cli(root, 'bootstrap', '--skip-install-agents-block')
+            (docs / 'week1_plan.md').write_text('# Week 1 Plan\n\nSee [missing](missing.md).\n', encoding='utf-8')
+            run_cli(root, 'register', 'docs/week1_plan.md')
+
+            lint = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), 'lint', '--repo-root', str(root)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(lint.returncode, 0)
+            self.assertIn('unresolved body link', lint.stdout)
+            self.assertIn('reason=missing-file', lint.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

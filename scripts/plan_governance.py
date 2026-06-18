@@ -652,6 +652,67 @@ def doc_body(text: str) -> str:
     return body.rstrip('\n')
 
 
+MARKDOWN_LINK_RE = re.compile(r'(?<!!)\[([^\]\n]+)\]\(([^)\n]+)\)')
+
+
+def strip_markdown_link_target(target: str) -> str:
+    cleaned = target.strip()
+    if not cleaned:
+        return ''
+    if cleaned[0] in {'"', "'"} and cleaned[-1:] == cleaned[0]:
+        cleaned = cleaned[1:-1].strip()
+    if ' ' in cleaned and not cleaned.startswith('<'):
+        cleaned = cleaned.split()[0]
+    if cleaned.startswith('<') and cleaned.endswith('>'):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
+def markdown_heading_slug(text: str) -> str:
+    slug = text.strip().lower()
+    slug = re.sub(r'[`*_~\[\](){}]', '', slug)
+    slug = re.sub(r'[^\w\-\u4e00-\u9fff ]+', '', slug)
+    slug = re.sub(r'\s+', '-', slug)
+    return slug.strip('-')
+
+
+def markdown_heading_slugs(text: str) -> set[str]:
+    slugs: set[str] = set()
+    for line in text.splitlines():
+        match = re.match(r'^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$', line)
+        if match:
+            slug = markdown_heading_slug(match.group(1))
+            if slug:
+                slugs.add(slug)
+    return slugs
+
+
+def extract_markdown_links(text: str) -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        for match in MARKDOWN_LINK_RE.finditer(line):
+            raw_target = strip_markdown_link_target(match.group(2))
+            if not raw_target:
+                continue
+            links.append({
+                'label': match.group(1).strip(),
+                'target': raw_target,
+                'line': line_no,
+            })
+    return links
+
+
+def split_link_path_and_anchor(target: str) -> tuple[str, str]:
+    if '#' not in target:
+        return target, ''
+    path_part, anchor = target.split('#', 1)
+    return path_part, anchor
+
+
+def is_external_link(target: str) -> bool:
+    return bool(re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', target)) or target.startswith('#')
+
+
 def load_registry_layout(repo_root: Path, cfg: dict[str, Any]) -> tuple[list[str], list[dict[str, str]]]:
     registry_path = repo_root / cfg.get('registry_path', 'docs/plan_registry.md')
     if registry_path.exists():
@@ -1111,10 +1172,12 @@ def edge(source: str, target: str, kind: str, provenance: str = 'registry-direct
 
 
 class PlanGraph:
-    def __init__(self, rows: list[dict[str, str]], cfg: dict[str, Any] | None = None):
+    def __init__(self, rows: list[dict[str, str]], cfg: dict[str, Any] | None = None, repo_root: Path | None = None):
         self.rows = rows
         self.cfg = cfg or {}
+        self.repo_root = repo_root.resolve() if repo_root is not None else None
         self.by_id = registry_plan_map(rows)
+        self.by_doc_path = registry_row_map(rows)
         self.children_by_parent: dict[str, list[str]] = {}
         self.supersedes_by_source: dict[str, list[str]] = {}
         self.superseded_by_source: dict[str, list[str]] = {}
@@ -1210,6 +1273,101 @@ class PlanGraph:
             'plan': row_summary(row),
             'impacted': list(impacted.values()),
             'provenance': 'registry-derived',
+        }
+
+    def body_links(self, plan_id: str | None = None) -> dict[str, Any]:
+        if self.repo_root is None:
+            return {'error': 'repo_root required for body-link extraction', 'query': 'body-links'}
+        selected_rows = self.rows
+        selected_plan: dict[str, str] | None = None
+        if plan_id:
+            selected_plan = self.by_id.get(plan_id)
+            if not selected_plan:
+                return {'error': f'plan_id not found: {plan_id}', 'plan_id': plan_id, 'query': 'body-links'}
+            selected_rows = [selected_plan]
+
+        edges: list[dict[str, Any]] = []
+        unresolved: list[dict[str, Any]] = []
+        for row in selected_rows:
+            doc_rel_path = row.get('doc_path', '')
+            doc_path = self.repo_root / doc_rel_path
+            if not doc_path.exists():
+                unresolved.append({
+                    'source': row.get('plan_id', ''),
+                    'source_doc_path': doc_rel_path,
+                    'target': doc_rel_path,
+                    'line': 0,
+                    'reason': 'source-missing',
+                    'provenance': 'body-link',
+                })
+                continue
+            text = doc_path.read_text(encoding='utf-8', errors='ignore')
+            for link in extract_markdown_links(doc_body(text)):
+                raw_target = link['target']
+                if is_external_link(raw_target):
+                    continue
+                path_part, anchor = split_link_path_and_anchor(raw_target)
+                if not path_part:
+                    continue
+                resolved = (doc_path.parent / path_part).resolve()
+                try:
+                    rel_target = resolved.relative_to(self.repo_root).as_posix()
+                except ValueError:
+                    unresolved.append(self._body_link_unresolved(row, raw_target, link, 'outside-repo'))
+                    continue
+                if not resolved.exists():
+                    unresolved.append(self._body_link_unresolved(row, raw_target, link, 'missing-file', target_doc_path=rel_target))
+                    continue
+                target_row = self.by_doc_path.get(rel_target)
+                if not target_row:
+                    unresolved.append(self._body_link_unresolved(row, raw_target, link, 'unregistered-target', target_doc_path=rel_target))
+                    continue
+                if anchor:
+                    target_slugs = markdown_heading_slugs(resolved.read_text(encoding='utf-8', errors='ignore'))
+                    if anchor.lower() not in target_slugs:
+                        unresolved.append(self._body_link_unresolved(row, raw_target, link, 'missing-anchor', target_doc_path=rel_target, target_plan_id=target_row.get('plan_id', '')))
+                        continue
+                edges.append({
+                    'source': row.get('plan_id', ''),
+                    'source_doc_path': doc_rel_path,
+                    'target': target_row.get('plan_id', ''),
+                    'target_doc_path': rel_target,
+                    'kind': 'links_to',
+                    'label': link['label'],
+                    'line': link['line'],
+                    'anchor': anchor.lower(),
+                    'provenance': 'body-link',
+                })
+
+        return {
+            'query': 'body-links',
+            'plan': row_summary(selected_plan) if selected_plan else {},
+            'edges': edges,
+            'unresolved': unresolved,
+            'edge_count': len(edges),
+            'unresolved_count': len(unresolved),
+            'provenance': 'body-link',
+        }
+
+    def _body_link_unresolved(
+        self,
+        row: dict[str, str],
+        raw_target: str,
+        link: dict[str, Any],
+        reason: str,
+        target_doc_path: str = '',
+        target_plan_id: str = '',
+    ) -> dict[str, Any]:
+        return {
+            'source': row.get('plan_id', ''),
+            'source_doc_path': row.get('doc_path', ''),
+            'target': raw_target,
+            'target_doc_path': target_doc_path,
+            'target_plan_id': target_plan_id,
+            'label': link.get('label', ''),
+            'line': link.get('line', 0),
+            'reason': reason,
+            'provenance': 'body-link',
         }
 
     def conflicts(self) -> dict[str, Any]:
@@ -1342,12 +1500,12 @@ def load_graph(repo_root: Path, cfg: dict[str, Any]) -> PlanGraph | None:
     rows = load_registry_rows_for_update(repo_root, cfg)
     if rows is None:
         return None
-    return PlanGraph(rows, cfg)
+    return PlanGraph(rows, cfg, repo_root=repo_root)
 
 
 def run_graph(repo_root: Path, cfg: dict[str, Any], ids: list[str], workstream: str | None = None) -> int:
     if not ids:
-        print('ERROR: graph requires a query: mainline, lineage, impact, or conflicts')
+        print('ERROR: graph requires a query: mainline, lineage, impact, conflicts, or body-links')
         return 2
     query = ids[0]
     graph = load_graph(repo_root, cfg)
@@ -1367,6 +1525,11 @@ def run_graph(repo_root: Path, cfg: dict[str, Any], ids: list[str], workstream: 
         result = graph.impact(ids[1])
     elif query == 'conflicts':
         result = graph.conflicts()
+    elif query == 'body-links':
+        if len(ids) > 2:
+            print('ERROR: graph body-links accepts at most one optional plan_id')
+            return 2
+        result = graph.body_links(ids[1] if len(ids) == 2 else None)
     else:
         print(f'ERROR: unknown graph query: {query}')
         return 2
@@ -1681,7 +1844,7 @@ def lint(repo_root: Path, cfg: dict[str, Any]) -> int:
         print('LINT ERROR: registry missing')
         return 1
     rows = parse_registry_rows(registry_path.read_text(encoding='utf-8'))
-    graph = PlanGraph(rows, cfg)
+    graph = PlanGraph(rows, cfg, repo_root=repo_root)
     row_by_plan_id = registry_plan_map(rows)
     q_path = repo_root / cfg.get('quarantine_path', 'docs/plan_quarantine.md')
     quarantined_paths = set()
@@ -1757,6 +1920,19 @@ def lint(repo_root: Path, cfg: dict[str, Any]) -> int:
 
     errors.extend(graph.integrity_errors())
     errors.extend(graph.conflict_errors())
+    body_links_result = graph.body_links()
+    if 'error' in body_links_result:
+        errors.append(f'body-links error: {body_links_result["error"]}')
+    for item in body_links_result.get('unresolved', []):
+        source = item.get('source_doc_path', '') or item.get('source', '')
+        target = item.get('target_doc_path', '') or item.get('target', '')
+        reason = item.get('reason', '')
+        line = item.get('line', 0)
+        label = item.get('label', '')
+        detail = f'unresolved body link for {source}:{line} -> {target} reason={reason}'
+        if label:
+            detail += f' label={label}'
+        errors.append(detail)
 
     if errors:
         for e in errors:

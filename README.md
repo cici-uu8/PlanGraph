@@ -93,9 +93,9 @@ PlanGraph currently focuses on the deterministic foundation:
 - current mainline separation
 - proactive register / refresh / close / supersede maintenance
 - lint rules for registry and lifecycle consistency
-- in-memory graph queries for mainline, lineage, impact, and deterministic conflicts
+- in-memory graph queries for mainline, lineage, impact, deterministic conflicts, and explicit Markdown body links
 
-SQLite indexing, MCP server support, body-link extraction, and semantic edges are planned phases, not required for the current local-first skill workflow.
+SQLite indexing, MCP server support, and semantic edges are planned phases, not required for the current local-first skill workflow. Body-link extraction is available as a read-only graph query and still needs broader real-repo validation before it drives heavier indexing work.
 
 ## How It Works After Enablement
 
@@ -129,7 +129,7 @@ This new plan replaces the old Week 2 retrieval plan.
 The agent links the new plan to the old one with `supersedes` / `superseded_by`.
 
 ```text
-Before changing the current plan, check its lineage and impact.
+Before changing the current plan, check its lineage, impact, and body links.
 ```
 
 The agent queries PlanGraph before choosing the source of truth.

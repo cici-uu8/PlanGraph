@@ -93,9 +93,9 @@ PlanGraph 当前先聚焦确定性基础：
 - 当前主线分离
 - 主动 register / refresh / close / supersede 维护
 - registry 和生命周期一致性 lint
-- mainline、lineage、impact 和确定性 conflicts 的内存图谱查询
+- mainline、lineage、impact、确定性 conflicts 和显式 Markdown 正文链接的内存图谱查询
 
-SQLite 索引、MCP server、正文链接抽取和语义边是后续阶段，不是当前本地 skill 工作流的前置条件。
+SQLite 索引、MCP server 和语义边是后续阶段，不是当前本地 skill 工作流的前置条件。正文链接抽取已经作为只读 graph query 提供，但在驱动更重索引设计前仍需要更多真实仓库验证。
 
 ## 启用后如何工作
 
@@ -129,7 +129,7 @@ agent 创建计划文档，并主动注册它。
 agent 建立 `supersedes` / `superseded_by` 关系。
 
 ```text
-修改当前计划前，先检查它的谱系和影响面。
+修改当前计划前，先检查它的谱系、影响面和正文链接。
 ```
 
 agent 查询 PlanGraph，再决定当前事实来源。

@@ -94,7 +94,7 @@ The current implementation manages four layers:
 1. `docs/plan_registry.md` is the canonical registry.
 2. `docs/plan_timeline_report.md` is a derived analytical report.
 3. `docs/plan_adoption_report.md` is a read-only first-pass report for existing repos.
-4. graph queries derive mainline, lineage, and impact from registry rows.
+4. graph queries derive mainline, lineage, impact, conflicts, and body links from registry rows and repo files.
 
 PlanGraph supports multiple active workstreams. It does not assume there is only one active plan in the whole repo. Instead, it enforces one canonical registry and requires each registered document to declare its role and lifecycle clearly.
 
@@ -203,6 +203,7 @@ python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph mainlin
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph lineage <plan_id> --repo-root "$(pwd)"
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph impact <plan_id> --repo-root "$(pwd)"
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph conflicts --repo-root "$(pwd)"
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph body-links [plan_id] --repo-root "$(pwd)"
 ```
 
 Graph query output is JSON. It is intended for agent consumption, not prose scraping. Treat `registry-direct` and `manual-confirmed` relationships as stronger evidence than inferred or derived relationships.
@@ -210,6 +211,8 @@ Graph query output is JSON. It is intended for agent consumption, not prose scra
 `graph mainline` includes `derivation`: `manual-pinned` when `mainline_mode=manual` and `mainline_doc_paths` are set, otherwise `auto-derived`. Auto-derived mainline output is a planning signal, not a human-confirmed single source of truth.
 
 `graph conflicts` reports deterministic hard conflicts from registry state only. It does not report semantic or embedding-inferred conflicts.
+
+`graph body-links` extracts explicit Markdown links from registered document bodies. It reports `body-link` edges and unresolved references, but it does not write inferred relationships back to the registry.
 
 ### 4. Lint PlanGraph state
 
@@ -229,6 +232,7 @@ This checks for:
 - changed body content in closed or superseded docs when a git baseline exists
 - broken or asymmetric `supersedes` / `superseded_by` links
 - graph-level issues such as supersession cycles and orphan parents
+- unresolved Markdown body links from registered plan documents
 
 ### 5. Close or supersede a plan
 
@@ -288,7 +292,7 @@ This skill manages or generates:
 - `docs/plan_quarantine.md`
 - `.plangraph.yml`
 - `.plangraph.ignore`
-- JSON graph query output for mainline, lineage, and impact
+- JSON graph query output for mainline, lineage, impact, conflicts, and body-links
 
 ## Common Mistakes
 

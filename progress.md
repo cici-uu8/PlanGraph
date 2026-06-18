@@ -15,3 +15,5 @@
 - Completed `v0.3` integrity/conflict boundary cleanup: structural graph errors stay in `integrity_errors`, while parent lifecycle contradictions are reported only through `graph conflicts`.
 - Continued `v0.3` dependency cleanup: config and frontmatter reads now fall back to the internal YAML parser when PyYAML is unavailable or fails, with regression tests for both paths.
 - Added `examples/github-actions/plangraph-lint.yml` as a copyable CI lint template for governed user repositories.
+- Continued `v0.3` Phase 4: added read-only Markdown body-link extraction via `graph body-links [plan_id]`, including relative path resolution, heading anchor checks, `body-link` provenance, and unresolved reference reporting. This does not write inferred links back to the registry.
+- Wired unresolved body-link references into `lint` so broken registered-document links are visible during normal governance checks.

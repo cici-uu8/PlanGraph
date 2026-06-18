@@ -194,6 +194,99 @@ class PlanGraphTests(unittest.TestCase):
             self.assertEqual(data['query'], 'conflicts')
             self.assertEqual(data['conflicts'][0]['type'], 'multiple-active-authoritative-heads')
 
+    def test_cli_graph_body_links_resolves_edges_and_unresolved_refs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            rows = [
+                ['source', 'Source', 'docs/source.md', 'execution_plan', 'core', 'active', 'in_progress', 'true', 'manual', '1.00', '', '', '', '', '', ''],
+                ['target', 'Target', 'docs/target.md', 'decision_doc', 'core', 'active', 'n_a', 'false', 'manual', '1.00', '', '', '', '', '', ''],
+            ]
+            (docs / 'plan_registry.md').write_text(registry_text(rows), encoding='utf-8')
+            (docs / 'source.md').write_text(
+                '\n'.join([
+                    '# Source',
+                    '',
+                    'See [target decision](target.md#decision-record).',
+                    'Missing context: [missing](missing.md).',
+                ]),
+                encoding='utf-8',
+            )
+            (docs / 'target.md').write_text('# Target\n\n## Decision Record\n', encoding='utf-8')
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), 'graph', 'body-links', 'source', '--repo-root', str(root)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            data = json.loads(result.stdout)
+
+            self.assertEqual(data['query'], 'body-links')
+            self.assertEqual(data['plan']['plan_id'], 'source')
+            self.assertEqual(data['edges'][0]['source'], 'source')
+            self.assertEqual(data['edges'][0]['target'], 'target')
+            self.assertEqual(data['edges'][0]['kind'], 'links_to')
+            self.assertEqual(data['edges'][0]['provenance'], 'body-link')
+            self.assertEqual(data['edges'][0]['anchor'], 'decision-record')
+            self.assertEqual(data['unresolved'][0]['reason'], 'missing-file')
+
+    def test_body_links_reports_unregistered_target_and_missing_anchor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            rows = [
+                ['source', 'Source', 'docs/source.md', 'execution_plan', 'core', 'active', 'in_progress', 'true', 'manual', '1.00', '', '', '', '', '', ''],
+                ['target', 'Target', 'docs/target.md', 'decision_doc', 'core', 'active', 'n_a', 'false', 'manual', '1.00', '', '', '', '', '', ''],
+            ]
+            (docs / 'plan_registry.md').write_text(registry_text(rows), encoding='utf-8')
+            (docs / 'source.md').write_text(
+                '\n'.join([
+                    '# Source',
+                    '',
+                    'Unregistered: [draft](draft.md).',
+                    'Bad anchor: [target missing anchor](target.md#not-here).',
+                ]),
+                encoding='utf-8',
+            )
+            (docs / 'target.md').write_text('# Target\n\n## Real Heading\n', encoding='utf-8')
+            (docs / 'draft.md').write_text('# Draft\n', encoding='utf-8')
+
+            result = plan_governance.PlanGraph(
+                plan_governance.parse_registry_rows(registry_text(rows)),
+                {},
+                repo_root=root,
+            ).body_links('source')
+            reasons = {item['reason'] for item in result['unresolved']}
+
+            self.assertEqual(result['edge_count'], 0)
+            self.assertIn('unregistered-target', reasons)
+            self.assertIn('missing-anchor', reasons)
+
+    def test_body_links_without_plan_id_scans_all_registered_docs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            rows = [
+                ['a', 'A', 'docs/a.md', 'execution_plan', 'core', 'active', 'in_progress', 'true', 'manual', '1.00', '', '', '', '', '', ''],
+                ['b', 'B', 'docs/b.md', 'decision_doc', 'core', 'active', 'n_a', 'false', 'manual', '1.00', '', '', '', '', '', ''],
+            ]
+            (docs / 'a.md').write_text('# A\n\nSee [b](b.md).\n', encoding='utf-8')
+            (docs / 'b.md').write_text('# B\n', encoding='utf-8')
+
+            result = plan_governance.PlanGraph(
+                plan_governance.parse_registry_rows(registry_text(rows)),
+                {},
+                repo_root=root,
+            ).body_links()
+
+            self.assertEqual(result['edge_count'], 1)
+            self.assertEqual(result['edges'][0]['source'], 'a')
+            self.assertEqual(result['edges'][0]['target'], 'b')
+
 
 if __name__ == '__main__':
     unittest.main()

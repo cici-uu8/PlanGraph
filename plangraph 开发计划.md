@@ -349,7 +349,7 @@ PlanGraph 不应随意声称冲突。冲突应分层：
 
 这份文档是 PlanGraph 的总主线，不是只管当前一小段的临时计划。
 
-当前执行阶段是 `v0.3` 的轻量确定性增强：`v0.2.1` 稳定化已经完成，硬冲突查询、PyYAML fallback 和 CI lint 模板已进入测试或样例保护；接下来继续推进正文链接抽取的 Stop / Go 验证；`SQLite`、`MCP`、语义层和 `1.0` 继续保留在同一份主计划里，但默认不进入当前批次。
+当前执行阶段是 `v0.3` 的轻量确定性增强：`v0.2.1` 稳定化已经完成，硬冲突查询、PyYAML fallback、CI lint 模板和只读正文链接抽取已进入测试或样例保护；接下来重点是正文链接抽取的真实仓库 Stop / Go 验证；`SQLite`、`MCP`、语义层和 `1.0` 继续保留在同一份主计划里，但默认不进入当前批次。
 
 每完成一阶段，都按 `test -> release/tag -> verify -> promote` 的顺序推进。后续阶段不关闭，只是要等前一阶段通过门禁后再进入。
 
@@ -535,17 +535,24 @@ Stop / Go：
 
 交付：
 
-- Markdown link extractor
-- relative path resolver
-- heading anchor resolver
-- unresolved reference report
-- `body-link` provenance
+- Markdown link extractor（已提供 `graph body-links` 初版）
+- relative path resolver（已支持 repo 内相对路径）
+- heading anchor resolver（已支持 GitHub 风格 heading slug 检查）
+- unresolved reference report（已输出 missing-file、unregistered-target、missing-anchor 等原因）
+- `body-link` provenance（已在 JSON 输出中标注）
 
 验收：
 
 - 能从计划正文链接推导候选边
 - 不能解析的链接进入 unresolved，不静默忽略
 - 不自动把候选边写入 registry
+
+当前状态：
+
+- `graph body-links [plan_id]` 是只读派生查询，不修改 registry。
+- `lint` 会报告 unresolved body links，但不会把候选边自动写入 registry。
+- 已有单元测试覆盖 resolved edge、missing file、unregistered target、missing anchor 和全仓扫描。
+- 仍需要在真实仓库上统计链接密度和误报率，再决定是否进入 SQLite 或更重的索引设计。
 
 Stop / Go：
 
@@ -687,7 +694,7 @@ Stop / Go：
 如果以成熟 PlanGraph 为目标，当前执行阶段是 `v0.3` 的轻量确定性增强。下一步不是马上写 MCP，也不是马上做 SQLite，而是：
 
 1. 保持 `v0.2.1` 稳定化结果：固定 config 写入格式，补 `register / close / supersede` 回归测试，明确 `mainline` 默认语义，清理公开入口剩余歧义。
-2. 推进 `v0.3` 的确定性增强：graph conflicts、去 PyYAML 依赖、CI lint 样例已先行完成，正文链接抽取仍需要 Stop / Go 验证。
+2. 推进 `v0.3` 的确定性增强：graph conflicts、去 PyYAML 依赖、CI lint 样例和只读正文链接抽取已先行完成，正文链接抽取仍需要真实仓库 Stop / Go 验证。
 3. 只有当 `v0.3` 在真实仓库验证通过后，才进入 SQLite。
 4. SQLite 通过后再进入 MCP。
 5. 语义层始终晚于硬边和索引层。
