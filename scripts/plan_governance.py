@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 from dataclasses import dataclass, field
 from datetime import date
@@ -30,6 +31,9 @@ DEFAULT_ADOPTION_REPORT_PATH = 'docs/plan_adoption_report.md'
 DEFAULT_EXTERNAL_IMPORT_DIR = 'docs/references/external'
 CONFIG_PATH = '.plangraph.yml'
 IGNORE_PATH = '.plangraph.ignore'
+INDEX_DIR = '.plangraph'
+INDEX_DB_PATH = '.plangraph/plangraph.db'
+INDEX_SCHEMA_VERSION = 1
 LEGACY_CONFIG_PATH = '.plan-governance.yml'
 LEGACY_IGNORE_PATH = '.plan-governance.ignore'
 AGENTS_BLOCK_START = '<!-- PLANGRAPH START -->'
@@ -314,7 +318,8 @@ def should_ignore(rel_path: str, patterns: list[str]) -> bool:
 
 def discover_candidates(repo_root: Path, cfg: dict[str, Any]) -> list[Candidate]:
     include_globs = cfg.get('scan', {}).get('include_globs', ['*.md', 'docs/**/*.md'])
-    exclude_globs = cfg.get('scan', {}).get('exclude_globs', [])
+    exclude_globs = list(cfg.get('scan', {}).get('exclude_globs', []) or [])
+    exclude_globs.append(f'{INDEX_DIR}/**')
     ignore_patterns = read_ignore_patterns(repo_root)
     found: dict[str, Candidate] = {}
     for pattern in include_globs:
@@ -334,11 +339,19 @@ def discover_candidates(repo_root: Path, cfg: dict[str, Any]) -> list[Candidate]
 
 def discover_markdown_files(repo_root: Path, cfg: dict[str, Any]) -> list[str]:
     include_globs = cfg.get('scan', {}).get('include_globs', ['*.md', 'docs/**/*.md'])
+    exclude_globs = list(cfg.get('scan', {}).get('exclude_globs', []) or [])
+    exclude_globs.append(f'{INDEX_DIR}/**')
+    ignore_patterns = read_ignore_patterns(repo_root)
     found: set[str] = set()
     for pattern in include_globs:
         for path in repo_root.glob(pattern):
             if path.is_file():
-                found.add(path.relative_to(repo_root).as_posix())
+                rel_path = path.relative_to(repo_root).as_posix()
+                if any(fnmatch.fnmatch(rel_path, p) for p in exclude_globs):
+                    continue
+                if should_ignore(rel_path, ignore_patterns):
+                    continue
+                found.add(rel_path)
     return sorted(found)
 
 
@@ -1640,6 +1653,451 @@ def load_graph(repo_root: Path, cfg: dict[str, Any]) -> PlanGraph | None:
     return PlanGraph(rows, cfg, repo_root=repo_root)
 
 
+def index_db_path(repo_root: Path, cfg: dict[str, Any]) -> Path:
+    return repo_root / cfg.get('index_path', INDEX_DB_PATH)
+
+
+def file_fingerprint(repo_root: Path, rel_path: str) -> dict[str, Any]:
+    path = repo_root / rel_path
+    if not path.exists() or not path.is_file():
+        return {
+            'path': rel_path,
+            'exists': 0,
+            'sha256': '',
+            'mtime_ns': 0,
+            'size': 0,
+        }
+    stat = path.stat()
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {
+        'path': rel_path,
+        'exists': 1,
+        'sha256': digest,
+        'mtime_ns': stat.st_mtime_ns,
+        'size': stat.st_size,
+    }
+
+
+def tracked_index_paths(repo_root: Path, cfg: dict[str, Any], rows: list[dict[str, str]]) -> list[str]:
+    paths: set[str] = {cfg.get('registry_path', 'docs/plan_registry.md')}
+    for candidate in [CONFIG_PATH, LEGACY_CONFIG_PATH]:
+        if (repo_root / candidate).exists():
+            paths.add(candidate)
+            break
+    for candidate in [IGNORE_PATH, LEGACY_IGNORE_PATH]:
+        if (repo_root / candidate).exists():
+            paths.add(candidate)
+            break
+    for row in rows:
+        doc_path = row.get('doc_path', '').strip()
+        if doc_path:
+            paths.add(doc_path)
+    return sorted(paths)
+
+
+def current_index_fingerprints(repo_root: Path, cfg: dict[str, Any], rows: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
+    return {
+        rel_path: file_fingerprint(repo_root, rel_path)
+        for rel_path in tracked_index_paths(repo_root, cfg, rows)
+    }
+
+
+def registry_edges(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
+    by_id = registry_plan_map(rows)
+    edges: list[dict[str, Any]] = []
+
+    def add(source: str, target: str, kind: str, row: dict[str, str], provenance: str = 'registry-direct') -> None:
+        if not source or not target:
+            return
+        target_row = by_id.get(target, {})
+        edges.append({
+            'source': source,
+            'target': target,
+            'kind': kind,
+            'provenance': provenance,
+            'source_doc_path': row.get('doc_path', ''),
+            'target_doc_path': target_row.get('doc_path', ''),
+            'line': 0,
+            'label': '',
+        })
+
+    for row in rows:
+        plan_id = row.get('plan_id', '')
+        for target in csv_ids(row.get('supersedes', '')):
+            add(plan_id, target, 'supersedes', row)
+        for target in csv_ids(row.get('superseded_by', '')):
+            add(plan_id, target, 'superseded_by', row)
+        parent = row.get('parent_plan', '').strip()
+        if parent:
+            add(plan_id, parent, 'child_of', row)
+            if parent in by_id:
+                add(parent, plan_id, 'parent_of', by_id[parent])
+        workstream = row.get('workstream', '').strip()
+        if workstream:
+            edges.append({
+                'source': plan_id,
+                'target': workstream,
+                'kind': 'part_of_workstream',
+                'provenance': 'registry-derived',
+                'source_doc_path': row.get('doc_path', ''),
+                'target_doc_path': '',
+                'line': 0,
+                'label': '',
+            })
+    return edges
+
+
+def ensure_index_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        '''
+        DROP TABLE IF EXISTS metadata;
+        DROP TABLE IF EXISTS nodes;
+        DROP TABLE IF EXISTS edges;
+        DROP TABLE IF EXISTS files;
+        DROP TABLE IF EXISTS unresolved_refs;
+        DROP TABLE IF EXISTS external_refs;
+
+        CREATE TABLE metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE nodes (
+            plan_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            doc_path TEXT NOT NULL,
+            doc_role TEXT NOT NULL,
+            workstream TEXT NOT NULL,
+            lifecycle_status TEXT NOT NULL,
+            execution_status TEXT NOT NULL,
+            authoritative TEXT NOT NULL,
+            classification_source TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            parent_plan TEXT NOT NULL,
+            supersedes TEXT NOT NULL,
+            superseded_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_reviewed_at TEXT NOT NULL,
+            notes TEXT NOT NULL
+        );
+
+        CREATE TABLE edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            target TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            provenance TEXT NOT NULL,
+            source_doc_path TEXT NOT NULL,
+            target_doc_path TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            label TEXT NOT NULL
+        );
+
+        CREATE TABLE files (
+            path TEXT PRIMARY KEY,
+            file_exists INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            size INTEGER NOT NULL
+        );
+
+        CREATE TABLE unresolved_refs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            source_doc_path TEXT NOT NULL,
+            target TEXT NOT NULL,
+            target_doc_path TEXT NOT NULL,
+            target_plan_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            provenance TEXT NOT NULL
+        );
+
+        CREATE TABLE external_refs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            source_doc_path TEXT NOT NULL,
+            target TEXT NOT NULL,
+            target_path TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            label TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            provenance TEXT NOT NULL,
+            file_exists INTEGER NOT NULL,
+            trusted INTEGER NOT NULL,
+            trusted_root TEXT NOT NULL,
+            external_worktree TEXT NOT NULL
+        );
+        '''
+    )
+
+
+def rebuild_sqlite_index(repo_root: Path, cfg: dict[str, Any]) -> dict[str, Any]:
+    rows = load_registry_rows_for_update(repo_root, cfg)
+    if rows is None:
+        return {'error': 'registry missing', 'query': 'index'}
+    graph = PlanGraph(rows, cfg, repo_root=repo_root)
+    body_links_result = graph.body_links()
+    if 'error' in body_links_result:
+        return {'error': body_links_result['error'], 'query': 'index'}
+
+    db_path = index_db_path(repo_root, cfg)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        ensure_index_schema(conn)
+        conn.executemany(
+            '''
+            INSERT INTO metadata (key, value)
+            VALUES (?, ?)
+            ''',
+            [
+                ('schema_version', str(INDEX_SCHEMA_VERSION)),
+                ('indexed_at', date.today().isoformat()),
+                ('repo_root', str(repo_root)),
+                ('registry_path', cfg.get('registry_path', 'docs/plan_registry.md')),
+            ],
+        )
+        conn.executemany(
+            '''
+            INSERT INTO nodes (
+                plan_id, title, doc_path, doc_role, workstream, lifecycle_status,
+                execution_status, authoritative, classification_source, confidence,
+                parent_plan, supersedes, superseded_by, created_at, last_reviewed_at, notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            [
+                (
+                    row.get('plan_id', ''),
+                    row.get('title', ''),
+                    row.get('doc_path', ''),
+                    row.get('doc_role', ''),
+                    row.get('workstream', ''),
+                    row.get('lifecycle_status', ''),
+                    row.get('execution_status', ''),
+                    row.get('authoritative', ''),
+                    row.get('classification_source', ''),
+                    row.get('confidence', ''),
+                    row.get('parent_plan', ''),
+                    row.get('supersedes', ''),
+                    row.get('superseded_by', ''),
+                    row.get('created_at', ''),
+                    row.get('last_reviewed_at', ''),
+                    row.get('notes', ''),
+                )
+                for row in rows
+            ],
+        )
+        all_edges = registry_edges(rows) + [
+            {
+                'source': item.get('source', ''),
+                'target': item.get('target', ''),
+                'kind': item.get('kind', 'links_to'),
+                'provenance': item.get('provenance', 'body-link'),
+                'source_doc_path': item.get('source_doc_path', ''),
+                'target_doc_path': item.get('target_doc_path', ''),
+                'line': int(item.get('line', 0) or 0),
+                'label': item.get('label', ''),
+            }
+            for item in body_links_result.get('edges', [])
+        ]
+        conn.executemany(
+            '''
+            INSERT INTO edges (source, target, kind, provenance, source_doc_path, target_doc_path, line, label)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            [
+                (
+                    item.get('source', ''),
+                    item.get('target', ''),
+                    item.get('kind', ''),
+                    item.get('provenance', ''),
+                    item.get('source_doc_path', ''),
+                    item.get('target_doc_path', ''),
+                    int(item.get('line', 0) or 0),
+                    item.get('label', ''),
+                )
+                for item in all_edges
+            ],
+        )
+        conn.executemany(
+            '''
+            INSERT INTO files (path, file_exists, sha256, mtime_ns, size)
+            VALUES (?, ?, ?, ?, ?)
+            ''',
+            [
+                (
+                    item['path'],
+                    int(item['exists']),
+                    item['sha256'],
+                    int(item['mtime_ns']),
+                    int(item['size']),
+                )
+                for item in current_index_fingerprints(repo_root, cfg, rows).values()
+            ],
+        )
+        conn.executemany(
+            '''
+            INSERT INTO unresolved_refs (
+                source, source_doc_path, target, target_doc_path, target_plan_id,
+                label, line, reason, provenance
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            [
+                (
+                    item.get('source', ''),
+                    item.get('source_doc_path', ''),
+                    item.get('target', ''),
+                    item.get('target_doc_path', ''),
+                    item.get('target_plan_id', ''),
+                    item.get('label', ''),
+                    int(item.get('line', 0) or 0),
+                    item.get('reason', ''),
+                    item.get('provenance', ''),
+                )
+                for item in body_links_result.get('unresolved', [])
+            ],
+        )
+        conn.executemany(
+            '''
+            INSERT INTO external_refs (
+                source, source_doc_path, target, target_path, kind, label, line,
+                provenance, file_exists, trusted, trusted_root, external_worktree
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            [
+                (
+                    item.get('source', ''),
+                    item.get('source_doc_path', ''),
+                    item.get('target', ''),
+                    item.get('target_path', ''),
+                    item.get('kind', 'external_reference'),
+                    item.get('label', ''),
+                    int(item.get('line', 0) or 0),
+                    item.get('provenance', ''),
+                    int(bool(item.get('exists'))),
+                    int(bool(item.get('trusted'))),
+                    item.get('trusted_root', ''),
+                    item.get('external_worktree', ''),
+                )
+                for item in body_links_result.get('external_references', [])
+            ],
+        )
+
+    return sqlite_status(repo_root, cfg, rows=rows)
+
+
+def sqlite_table_count(conn: sqlite3.Connection, table: str) -> int:
+    return int(conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0])
+
+
+def load_index_metadata(conn: sqlite3.Connection) -> dict[str, str]:
+    return {
+        str(row[0]): str(row[1])
+        for row in conn.execute('SELECT key, value FROM metadata')
+    }
+
+
+def index_staleness(
+    conn: sqlite3.Connection,
+    repo_root: Path,
+    cfg: dict[str, Any],
+    rows: list[dict[str, str]],
+) -> tuple[bool, list[dict[str, str]]]:
+    stored = {
+        str(row[0]): {
+            'path': str(row[0]),
+            'exists': int(row[1]),
+            'sha256': str(row[2]),
+            'mtime_ns': int(row[3]),
+            'size': int(row[4]),
+        }
+        for row in conn.execute('SELECT path, file_exists, sha256, mtime_ns, size FROM files')
+    }
+    current = current_index_fingerprints(repo_root, cfg, rows)
+    stale_files: list[dict[str, str]] = []
+    for path, item in current.items():
+        stored_item = stored.get(path)
+        if stored_item is None:
+            stale_files.append({'path': path, 'reason': 'not-indexed'})
+            continue
+        for field_name in ['exists', 'sha256', 'mtime_ns', 'size']:
+            if stored_item[field_name] != item[field_name]:
+                stale_files.append({'path': path, 'reason': f'{field_name}-changed'})
+                break
+    for path in sorted(set(stored) - set(current)):
+        stale_files.append({'path': path, 'reason': 'no-longer-tracked'})
+    return bool(stale_files), stale_files
+
+
+def sqlite_status(repo_root: Path, cfg: dict[str, Any], rows: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    db_path = index_db_path(repo_root, cfg)
+    registry_path = repo_root / cfg.get('registry_path', 'docs/plan_registry.md')
+    registry_rows = rows
+    errors: list[str] = []
+    if registry_rows is None:
+        if registry_path.exists():
+            registry_rows = parse_registry_rows(registry_path.read_text(encoding='utf-8'))
+        else:
+            registry_rows = []
+            errors.append('registry missing')
+
+    result: dict[str, Any] = {
+        'query': 'status',
+        'db_path': str(db_path),
+        'exists': db_path.exists(),
+        'stale': True,
+        'schema_version': '',
+        'indexed_at': '',
+        'node_count': 0,
+        'edge_count': 0,
+        'file_count': 0,
+        'unresolved_count': 0,
+        'external_reference_count': 0,
+        'registry_row_count': len(registry_rows),
+        'stale_files': [],
+        'errors': errors,
+    }
+    if not db_path.exists():
+        return result
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            metadata = load_index_metadata(conn)
+            schema_version = metadata.get('schema_version', '')
+            result['schema_version'] = schema_version
+            result['indexed_at'] = metadata.get('indexed_at', '')
+            result['node_count'] = sqlite_table_count(conn, 'nodes')
+            result['edge_count'] = sqlite_table_count(conn, 'edges')
+            result['file_count'] = sqlite_table_count(conn, 'files')
+            result['unresolved_count'] = sqlite_table_count(conn, 'unresolved_refs')
+            result['external_reference_count'] = sqlite_table_count(conn, 'external_refs')
+            stale, stale_files = index_staleness(conn, repo_root, cfg, registry_rows)
+            result['stale'] = stale or schema_version != str(INDEX_SCHEMA_VERSION) or bool(errors)
+            result['stale_files'] = stale_files
+            if schema_version != str(INDEX_SCHEMA_VERSION):
+                result['errors'].append(f'schema version mismatch: {schema_version}')
+    except sqlite3.DatabaseError as exc:
+        result['errors'].append(f'index database error: {exc}')
+        result['stale'] = True
+    return result
+
+
+def run_index(repo_root: Path, cfg: dict[str, Any]) -> int:
+    result = rebuild_sqlite_index(repo_root, cfg)
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 1 if 'error' in result else 0
+
+
+def run_status(repo_root: Path, cfg: dict[str, Any]) -> int:
+    result = sqlite_status(repo_root, cfg)
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
 def run_graph(repo_root: Path, cfg: dict[str, Any], ids: list[str], workstream: str | None = None) -> int:
     if not ids:
         print('ERROR: graph requires a query: mainline, lineage, impact, conflicts, or body-links')
@@ -2434,7 +2892,7 @@ def run_refresh(repo_root: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['init', 'bootstrap', 'refresh', 'register', 'graph', 'lint', 'report', 'adopt-external-references', 'install-agents-block', 'remove-agents-block', 'close', 'supersede'])
+    parser.add_argument('command', choices=['init', 'bootstrap', 'refresh', 'register', 'graph', 'index', 'status', 'lint', 'report', 'adopt-external-references', 'install-agents-block', 'remove-agents-block', 'close', 'supersede'])
     parser.add_argument('ids', nargs='*')
     parser.add_argument('--repo-root', default=os.getcwd())
     parser.add_argument('--lifecycle-status', default='closed')
@@ -2459,6 +2917,14 @@ def main() -> int:
     if args.command == 'graph':
         cfg = load_effective_config(repo_root)
         return run_graph(repo_root, cfg, args.ids, workstream=args.workstream)
+
+    if args.command == 'index':
+        cfg = load_effective_config(repo_root)
+        return run_index(repo_root, cfg)
+
+    if args.command == 'status':
+        cfg = load_effective_config(repo_root)
+        return run_status(repo_root, cfg)
 
     cfg = ensure_repo_files(repo_root)
 

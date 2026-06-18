@@ -67,6 +67,7 @@ def write_minimal_repo_config(root: Path) -> None:
             'scan:',
             '  include_globs:',
             '    - docs/**/*.md',
+            '    - .plangraph/**/*.md',
             '  exclude_globs:',
             'classification:',
             '  high_confidence_threshold: 0.85',
@@ -120,6 +121,81 @@ def row_for_doc(root: Path, doc_path: str) -> dict[str, str]:
 
 
 class GovernanceCommandTests(unittest.TestCase):
+    def test_index_builds_sqlite_status_and_detects_stale_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            write_minimal_repo_config(root)
+            run_cli(root, 'bootstrap', '--skip-install-agents-block')
+            (docs / 'week1_plan.md').write_text('# Week 1 Plan\n\nSee [decision](decision.md).\n', encoding='utf-8')
+            (docs / 'decision.md').write_text('# Decision\n', encoding='utf-8')
+            run_cli(root, 'register', 'docs/week1_plan.md')
+            run_cli(root, 'register', 'docs/decision.md')
+
+            before = run_cli(root, 'status')
+            before_data = json.loads(before.stdout)
+            self.assertFalse(before_data['exists'])
+            self.assertTrue(before_data['stale'])
+
+            indexed = run_cli(root, 'index')
+            indexed_data = json.loads(indexed.stdout)
+            self.assertTrue(indexed_data['exists'])
+            self.assertFalse(indexed_data['stale'])
+            self.assertEqual(indexed_data['schema_version'], '1')
+            self.assertEqual(indexed_data['node_count'], 2)
+            self.assertGreaterEqual(indexed_data['edge_count'], 1)
+            self.assertEqual(indexed_data['unresolved_count'], 0)
+            self.assertTrue((root / '.plangraph' / 'plangraph.db').exists())
+
+            with (docs / 'plan_registry.md').open('a', encoding='utf-8') as fh:
+                fh.write('\n')
+
+            after = run_cli(root, 'status')
+            after_data = json.loads(after.stdout)
+            self.assertTrue(after_data['exists'])
+            self.assertTrue(after_data['stale'])
+            stale_paths = {item['path'] for item in after_data['stale_files']}
+            self.assertIn('docs/plan_registry.md', stale_paths)
+
+    def test_index_directory_does_not_enter_plan_discovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            index_dir = root / '.plangraph'
+            docs.mkdir()
+            index_dir.mkdir()
+            write_minimal_repo_config(root)
+            (index_dir / 'cached_plan.md').write_text('# Cached Plan\n\nThis is generated cache.\n', encoding='utf-8')
+            (docs / 'week1_plan.md').write_text('# Week 1 Plan\n', encoding='utf-8')
+
+            run_cli(root, 'bootstrap', '--skip-install-agents-block')
+            registered_paths = {row['doc_path'] for row in registry_rows(root).values()}
+
+            self.assertIn('docs/week1_plan.md', registered_paths)
+            self.assertNotIn('.plangraph/cached_plan.md', registered_paths)
+
+    def test_index_status_does_not_track_missing_legacy_config_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            (docs / 'plan_registry.md').write_text(
+                '| plan_id | title | doc_path | doc_role | workstream | lifecycle_status | execution_status | authoritative | classification_source | confidence | parent_plan | supersedes | superseded_by | created_at | last_reviewed_at | notes |\n'
+                '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n'
+                '| a | A | docs/a.md | execution_plan | core | active | in_progress | true | manual | 1.00 |  |  |  |  |  |  |\n',
+                encoding='utf-8',
+            )
+            (docs / 'a.md').write_text('# A\n', encoding='utf-8')
+
+            result = run_cli(root, 'index')
+            data = json.loads(result.stdout)
+
+            self.assertFalse(data['stale'])
+            stale_paths = {item['path'] for item in data['stale_files']}
+            self.assertNotIn('.plangraph.yml', stale_paths)
+            self.assertNotIn('.plan-governance.yml', stale_paths)
+
     def test_register_close_and_supersede_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

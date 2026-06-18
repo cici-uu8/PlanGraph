@@ -15,9 +15,10 @@ The current implementation is deterministic and registry-driven. It uses:
 2. `docs/plan_timeline_report.md` as a derived analytical report.
 3. `docs/plan_adoption_report.md` as a read-only first-pass report for existing repos.
 4. `.plangraph.yml` and `.plangraph.ignore` as the current config files.
-5. in-memory graph queries for mainline, lineage, and impact.
+5. in-memory graph queries for mainline, lineage, impact, conflicts, and body links.
+6. optional local SQLite indexing under `.plangraph/plangraph.db` for persisted graph status and future MCP support.
 
-SQLite indexing, MCP server support, body-link extraction, and semantic edges are planned phases, not required for the current skill workflow.
+MCP server support and semantic edges are planned phases. SQLite indexing is a derived cache and does not replace the registry as the source of truth.
 
 After installation, users should normally invoke this skill through natural-language requests in Codex, not by typing script paths manually. The Python commands shown below are implementation details the skill may use when deterministic file updates or graph queries are needed.
 
@@ -205,6 +206,8 @@ python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph impact 
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph conflicts --repo-root "$(pwd)"
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph body-links [plan_id] --repo-root "$(pwd)"
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py adopt-external-references --repo-root "$(pwd)"
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py index --repo-root "$(pwd)"
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py status --repo-root "$(pwd)"
 ```
 
 Graph query output is JSON. It is intended for agent consumption, not prose scraping. Treat `registry-direct` and `manual-confirmed` relationships as stronger evidence than inferred or derived relationships.
@@ -239,7 +242,7 @@ This checks for:
 
 Outside-repo local Markdown links are reported as `external_reference` context instead of failing lint by default. Missing repo-local links still fail lint because they point at broken or unregistered documents inside the governed repo.
 
-After adopting external references, run `graph body-links` again. If repo-local body-link edges remain sparse or semantically ambiguous, do not move to SQLite indexing yet.
+After adopting external references, run `graph body-links` again. Use `index` to build the local SQLite cache when persisted graph status, future MCP reads, or multi-agent read stability matter. Use `status` to check whether the cache exists and whether it is stale after registry or plan-document changes.
 
 ### 5. Close or supersede a plan
 
@@ -299,6 +302,7 @@ This skill manages or generates:
 - `docs/plan_quarantine.md`
 - `.plangraph.yml`
 - `.plangraph.ignore`
+- `.plangraph/plangraph.db`
 - JSON graph query output for mainline, lineage, impact, conflicts, and body-links
 
 ## Common Mistakes
