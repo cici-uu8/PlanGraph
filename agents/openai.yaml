@@ -1,4 +1,4 @@
 interface:
-  display_name: "Plan Governance"
-  short_description: "Plan lifecycle governance across docs"
-  default_prompt: "Use $plan-governance to analyze adoption for this repo, or use $plan-governance to enable plan governance."
+  display_name: "PlanGraph"
+  short_description: "Planning graph intelligence across project docs"
+  default_prompt: "Use $plangraph to analyze this repo, or use $plangraph to enable planning graph."

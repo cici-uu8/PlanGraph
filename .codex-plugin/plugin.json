@@ -1,33 +1,35 @@
 {
-  "name": "plan-governance",
+  "name": "plangraph",
   "version": "0.2.0",
-  "description": "Lifecycle governance plugin for project planning documents in Codex.",
+  "description": "Local-first planning graph plugin for project plan lineage, mainline, impact, and governance in Codex.",
   "author": {
     "name": "cici-uu8",
     "url": "https://github.com/cici-uu8"
   },
-  "homepage": "https://github.com/cici-uu8/Plan-governance-Skill",
-  "repository": "https://github.com/cici-uu8/Plan-governance-Skill",
+  "homepage": "https://github.com/cici-uu8/PlanGraph",
+  "repository": "https://github.com/cici-uu8/PlanGraph",
   "license": "MIT",
   "keywords": [
-    "plan-governance",
+    "plangraph",
+    "plan-graph",
     "codex-plugin",
     "codex-skill",
     "project-planning",
-    "documentation-governance"
+    "documentation-governance",
+    "planning-graph"
   ],
   "skills": "./skills",
   "interface": {
-    "displayName": "Plan Governance",
-    "shortDescription": "Keep project plan docs governed and current.",
-    "longDescription": "Adopt plan governance in existing or new repositories, maintain a canonical plan registry, and keep plan lifecycle state aligned as plans are created, replaced, and closed.",
+    "displayName": "PlanGraph",
+    "shortDescription": "Local-first graph intelligence for project plans.",
+    "longDescription": "Analyze existing planning docs, maintain a canonical plan registry, and query plan mainline, lineage, impact, and lifecycle state as plans are created, replaced, and closed.",
     "developerName": "cici-uu8",
     "category": "Productivity",
     "capabilities": [
       "Write",
       "Interactive"
     ],
-    "websiteURL": "https://github.com/cici-uu8/Plan-governance-Skill",
+    "websiteURL": "https://github.com/cici-uu8/PlanGraph",
     "brandColor": "#0F766E",
     "composerIcon": "./assets/logo.png",
     "logo": "./assets/logo.png",
@@ -37,8 +39,8 @@
       "./assets/screenshot-timeline.png"
     ],
     "defaultPrompt": [
-      "Use $plan-governance to analyze adoption for this repo.",
-      "Use $plan-governance to enable plan governance."
+      "Use $plangraph to analyze this repo.",
+      "Use $plangraph to enable planning graph."
     ]
   }
 }

@@ -133,11 +133,11 @@ def generate_banner() -> None:
     draw_badge(draw, 208, 88, "Codex Plugin", PANEL_ALT)
     draw_badge(draw, 418, 88, "English / 简体中文", PANEL_ALT, bold=False)
 
-    draw.text((92, 168), "Plan Governance", font=font(88, bold=True), fill=WHITE)
+    draw.text((92, 168), "PlanGraph", font=font(88, bold=True), fill=WHITE)
     write_multiline(
         draw,
         (92, 286),
-        "Keep project plan docs current, visible, and governed across brownfield repos.",
+        "CodeGraph for project plans: local-first lineage, mainline, impact, and governance for AI agents.",
         fill=TEXT,
         font_obj=font(34),
         max_width=720,
@@ -148,8 +148,8 @@ def generate_banner() -> None:
     write_multiline(
         draw,
         (92, 478),
-        "Claude wrote a new execution plan. Codex did not confirm the current workstream and followed an older plan instead. "
-        "This skill makes the current plan explicit, tracks replacements, and keeps the lifecycle visible inside the repo.",
+        "Agents can read a plan file, but they often miss which plan is current, what it replaced, and what might break downstream. "
+        "PlanGraph turns plan docs into a repo-visible graph of lineage, mainline, impact, and lifecycle state.",
         fill=MUTED,
         font_obj=font(26),
         max_width=720,
@@ -159,10 +159,10 @@ def generate_banner() -> None:
     rounded(draw, (900, 126, 1468, 780), fill=PANEL_ALT, radius=28, outline=GRID, width=2)
     draw.text((940, 168), "What you get", font=font(30, bold=True), fill=WHITE)
     items = [
-        ("Read-only adoption analysis", "Identify likely plan docs before governance writes anything."),
+        ("Read-only adoption analysis", "Identify likely plan docs before graph state writes anything."),
         ("Canonical plan registry", "Track current, historical, superseded, and quarantined docs."),
-        ("Autonomous upkeep", "Register, refresh, close, and lint as plans change."),
-        ("Managed AGENTS block", "Keep agent behavior aligned after governance is enabled."),
+        ("Graph queries", "Ask for mainline, lineage, and impact before changing plans."),
+        ("Autonomous upkeep", "Register, refresh, close, supersede, and lint as plans change."),
     ]
     y = 226
     for title, desc in items:
@@ -170,7 +170,7 @@ def generate_banner() -> None:
         draw.text((978, y), title, font=font(24, bold=True), fill=TEXT)
         y = write_multiline(draw, (978, y + 34), desc, fill=MUTED, font_obj=font(20), max_width=430, line_gap=8) + 18
 
-    draw.text((92, 744), "Two entry phrases. Ongoing maintenance after enablement.", font=font(24, bold=True), fill=AMBER)
+    draw.text((92, 744), "Two entry phrases. Graph-aware upkeep after enablement.", font=font(24, bold=True), fill=AMBER)
     img.save(ASSETS_DIR / "hero-banner.png")
 
 

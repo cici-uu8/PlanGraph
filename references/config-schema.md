@@ -1,6 +1,6 @@
 # Config Schema
 
-`plan-governance` reads `.plan-governance.yml` from the repo root.
+PlanGraph reads `.plangraph.yml` from the repo root. Current compatibility code can still read `.plan-governance.yml` when a project already has the legacy file, but new repositories should use `.plangraph.yml`.
 
 Default shape:
 
@@ -111,6 +111,6 @@ Notes:
 - `mainline_mode=auto` means the skill may update `mainline_doc_paths` from repo evidence. Set `mainline_mode=manual` when the repo owner wants to pin the mainline explicitly and stop automatic reassignment.
 - `execution_policy` may be set explicitly to values such as `strict_mainline` or `parallel_workstreams`. The default `auto` lets the skill infer whether the repo currently behaves like one mainline or several parallel workstreams.
 - `update_mode=hybrid` is the recommended default. It preserves existing registry rows and appends newly discovered high-confidence docs.
-- `install_agents_block=true` is the recommended default when a repo explicitly enables plan governance. Set it to `false` only when the project wants governance files without managed `AGENTS.md` enforcement.
+- `install_agents_block=true` is the recommended default when a repo explicitly enables PlanGraph. Set it to `false` only when the project wants registry files without managed `AGENTS.md` enforcement.
 - Repos may extend enums, but the registry and lint rules must agree with the configured enum set.
 - `classification.transcript_patterns` should describe file names or paths, not arbitrary body text, to avoid quarantining plan docs that merely mention chat logs.

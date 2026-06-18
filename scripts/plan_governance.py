@@ -5,6 +5,7 @@ import argparse
 from copy import deepcopy
 import fnmatch
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -14,7 +15,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    yaml = None
 
 DEFAULT_CONFIG_TEMPLATE = Path.home() / '.codex/skills/plan-governance/templates/plan-governance.yml'
 DEFAULT_IGNORE_TEMPLATE = Path.home() / '.codex/skills/plan-governance/templates/plan-governance-ignore'
@@ -23,8 +27,14 @@ DEFAULT_TIMELINE_TEMPLATE = Path.home() / '.codex/skills/plan-governance/templat
 DEFAULT_QUARANTINE_TEMPLATE = Path.home() / '.codex/skills/plan-governance/templates/plan-quarantine.md'
 DEFAULT_AGENTS_SNIPPET = Path.home() / '.codex/skills/plan-governance/templates/AGENTS-plan-governance-snippet.md'
 DEFAULT_ADOPTION_REPORT_PATH = 'docs/plan_adoption_report.md'
-AGENTS_BLOCK_START = '<!-- PLAN-GOVERNANCE START -->'
-AGENTS_BLOCK_END = '<!-- PLAN-GOVERNANCE END -->'
+CONFIG_PATH = '.plangraph.yml'
+IGNORE_PATH = '.plangraph.ignore'
+LEGACY_CONFIG_PATH = '.plan-governance.yml'
+LEGACY_IGNORE_PATH = '.plan-governance.ignore'
+AGENTS_BLOCK_START = '<!-- PLANGRAPH START -->'
+AGENTS_BLOCK_END = '<!-- PLANGRAPH END -->'
+LEGACY_AGENTS_BLOCK_START = '<!-- PLAN-GOVERNANCE START -->'
+LEGACY_AGENTS_BLOCK_END = '<!-- PLAN-GOVERNANCE END -->'
 
 TRANSCRIPT_PATTERNS = [
     '*对话记录*',
@@ -137,8 +147,106 @@ class Candidate:
 def load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    data = yaml.safe_load(path.read_text(encoding='utf-8'))
+    text = path.read_text(encoding='utf-8')
+    if yaml is None:
+        return parse_simple_yaml_mapping(text)
+    data = yaml.safe_load(text)
     return data or {}
+
+
+def parse_simple_yaml_mapping(text: str) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    stack: list[tuple[int, Any]] = [(-1, result)]
+    pending_key: tuple[int, dict[str, Any], str] | None = None
+    for raw_line in text.splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith('#'):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(' '))
+        line = raw_line.strip()
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        container = stack[-1][1]
+        if line.startswith('- '):
+            value = parse_simple_yaml_scalar(line[2:].strip())
+            if pending_key is not None and not isinstance(container, list):
+                pending_indent, parent, key = pending_key
+                if indent > pending_indent:
+                    new_list: list[Any] = []
+                    parent[key] = new_list
+                    stack.append((indent - 1, new_list))
+                    container = new_list
+            if isinstance(container, list):
+                container.append(value)
+            pending_key = None
+            continue
+        if ':' not in line or not isinstance(container, dict):
+            continue
+        key, value = line.split(':', 1)
+        key = key.strip()
+        value = value.strip()
+        if value:
+            container[key] = parse_simple_yaml_scalar(value)
+            pending_key = None
+        else:
+            new_dict: dict[str, Any] = {}
+            container[key] = new_dict
+            pending_key = (indent, container, key)
+            stack.append((indent, new_dict))
+    return result
+
+
+def parse_simple_yaml_scalar(value: str) -> Any:
+    value = value.strip().strip('"').strip("'")
+    if value.lower() == 'true':
+        return True
+    if value.lower() == 'false':
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return value
+
+
+def dump_simple_yaml(data: Any, indent: int = 0) -> str:
+    prefix = ' ' * indent
+    if isinstance(data, dict):
+        lines: list[str] = []
+        for key, value in data.items():
+            if isinstance(value, dict):
+                lines.append(f'{prefix}{key}:')
+                lines.append(dump_simple_yaml(value, indent + 2))
+            elif isinstance(value, list):
+                lines.append(f'{prefix}{key}:')
+                lines.append(dump_simple_yaml(value, indent + 2))
+            else:
+                lines.append(f'{prefix}{key}: {dump_simple_yaml_scalar(value)}')
+        return '\n'.join(lines)
+    if isinstance(data, list):
+        lines = []
+        for value in data:
+            if isinstance(value, (dict, list)):
+                lines.append(f'{prefix}-')
+                lines.append(dump_simple_yaml(value, indent + 2))
+            else:
+                lines.append(f'{prefix}- {dump_simple_yaml_scalar(value)}')
+        return '\n'.join(lines)
+    return f'{prefix}{dump_simple_yaml_scalar(data)}'
+
+
+def dump_simple_yaml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if value is None:
+        return "''"
+    text = str(value)
+    if text == '':
+        return "''"
+    if re.search(r'[:#\n]', text) or text.strip() != text:
+        return repr(text)
+    return text
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -152,8 +260,8 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 
 def ensure_repo_files(repo_root: Path) -> dict[str, Any]:
-    config_path = repo_root / '.plan-governance.yml'
-    ignore_path = repo_root / '.plan-governance.ignore'
+    config_path = repo_root / CONFIG_PATH
+    ignore_path = repo_root / IGNORE_PATH
     if not config_path.exists():
         shutil.copy(DEFAULT_CONFIG_TEMPLATE, config_path)
     if not ignore_path.exists():
@@ -162,18 +270,27 @@ def ensure_repo_files(repo_root: Path) -> dict[str, Any]:
 
 
 def load_effective_config(repo_root: Path) -> dict[str, Any]:
-    config_path = repo_root / '.plan-governance.yml'
+    config_path = repo_root / CONFIG_PATH
+    legacy_config_path = repo_root / LEGACY_CONFIG_PATH
+    if not config_path.exists() and legacy_config_path.exists():
+        config_path = legacy_config_path
     return deep_merge(load_yaml(DEFAULT_CONFIG_TEMPLATE), load_yaml(config_path))
 
 
 def persist_config(repo_root: Path, cfg: dict[str, Any]) -> None:
-    config_path = repo_root / '.plan-governance.yml'
+    config_path = repo_root / CONFIG_PATH
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    if yaml is None:
+        config_path.write_text(dump_simple_yaml(cfg).rstrip() + '\n', encoding='utf-8')
+        return
     config_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding='utf-8')
 
 
 def read_ignore_patterns(repo_root: Path) -> list[str]:
-    ignore_path = repo_root / '.plan-governance.ignore'
+    ignore_path = repo_root / IGNORE_PATH
+    legacy_ignore_path = repo_root / LEGACY_IGNORE_PATH
+    if not ignore_path.exists() and legacy_ignore_path.exists():
+        ignore_path = legacy_ignore_path
     if not ignore_path.exists():
         return []
     lines = []
@@ -257,7 +374,7 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
     if not match:
         return {}
     try:
-        data = yaml.safe_load(match.group(1))
+        data = yaml.safe_load(match.group(1)) if yaml is not None else parse_simple_yaml_mapping(match.group(1))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -270,7 +387,7 @@ def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if not match:
         return {}, text
     try:
-        data = yaml.safe_load(match.group(1))
+        data = yaml.safe_load(match.group(1)) if yaml is not None else parse_simple_yaml_mapping(match.group(1))
         frontmatter = data if isinstance(data, dict) else {}
     except Exception:
         frontmatter = {}
@@ -730,7 +847,7 @@ def write_adoption_report(repo_root: Path, cfg: dict[str, Any], classified: list
         '',
         f'Generated: {date.today().isoformat()}',
         '',
-        'This report is read-only. It helps you understand which files may be plans before this project starts using plan governance.',
+        'This report is read-only. It helps you understand which files may be plans before this project starts using PlanGraph.',
         '',
         '## Quick Answer',
         '',
@@ -796,13 +913,13 @@ def write_adoption_report(repo_root: Path, cfg: dict[str, Any], classified: list
         '',
         'This report does not write any registry or quarantine files. It only helps you decide what the project should do next.',
         '',
-        'If the scan patterns do not fit your project, edit `.plan-governance.yml` later before running `bootstrap`.',
+        'If the scan patterns do not fit your project, edit `.plangraph.yml` later before running `bootstrap`.',
         '',
         '## Recommended Next Steps',
         '',
         '1. Read the high-confidence and quarantine tables above.',
         '2. Decide which files are active, historical, superseded, or irrelevant.',
-        '3. If the scan rules need project-specific paths or ignores, edit `.plan-governance.yml` after reviewing the report.',
+        '3. If the scan rules need project-specific paths or ignores, edit `.plangraph.yml` after reviewing the report.',
         '4. Run `plan_governance.py bootstrap --repo-root "$(pwd)"` only after you are comfortable with the candidates.',
         '',
         'If you are unsure, do not run `bootstrap` yet. First mark questionable files in your notes or adjust ignore rules, then run `init` again.',
@@ -962,6 +1079,215 @@ def registry_row_map(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
 
 def registry_plan_map(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
     return {row['plan_id']: row for row in rows}
+
+
+def csv_ids(value: str) -> list[str]:
+    return [item.strip() for item in str(value or '').split(',') if item.strip()]
+
+
+def row_summary(row: dict[str, str]) -> dict[str, str]:
+    return {
+        'plan_id': row.get('plan_id', ''),
+        'title': row.get('title', ''),
+        'doc_path': row.get('doc_path', ''),
+        'doc_role': row.get('doc_role', ''),
+        'workstream': row.get('workstream', ''),
+        'lifecycle_status': row.get('lifecycle_status', ''),
+        'execution_status': row.get('execution_status', ''),
+        'authoritative': row.get('authoritative', ''),
+    }
+
+
+def edge(source: str, target: str, kind: str, provenance: str = 'registry-direct') -> dict[str, str]:
+    return {
+        'source': source,
+        'target': target,
+        'kind': kind,
+        'provenance': provenance,
+    }
+
+
+class PlanGraph:
+    def __init__(self, rows: list[dict[str, str]], cfg: dict[str, Any] | None = None):
+        self.rows = rows
+        self.cfg = cfg or {}
+        self.by_id = registry_plan_map(rows)
+        self.children_by_parent: dict[str, list[str]] = {}
+        self.supersedes_by_source: dict[str, list[str]] = {}
+        self.superseded_by_source: dict[str, list[str]] = {}
+        self.workstream_index: dict[str, list[str]] = {}
+        for row in rows:
+            plan_id = row.get('plan_id', '')
+            if not plan_id:
+                continue
+            self.workstream_index.setdefault(row.get('workstream', '') or 'general', []).append(plan_id)
+            parent = row.get('parent_plan', '').strip()
+            if parent:
+                self.children_by_parent.setdefault(parent, []).append(plan_id)
+            self.supersedes_by_source[plan_id] = csv_ids(row.get('supersedes', ''))
+            self.superseded_by_source[plan_id] = csv_ids(row.get('superseded_by', ''))
+
+    def lineage(self, plan_id: str) -> dict[str, Any]:
+        row = self.by_id.get(plan_id)
+        if not row:
+            return {'error': f'plan_id not found: {plan_id}', 'plan_id': plan_id}
+        backward_edges = self._walk_supersedes(plan_id, 'backward')
+        forward_edges = self._walk_supersedes(plan_id, 'forward')
+        related_ids = {plan_id}
+        for item in backward_edges + forward_edges:
+            related_ids.add(item['source'])
+            related_ids.add(item['target'])
+        return {
+            'query': 'lineage',
+            'plan': row_summary(row),
+            'backward': [row_summary(self.by_id[item['target']]) for item in backward_edges if item['target'] in self.by_id],
+            'forward': [row_summary(self.by_id[item['target']]) for item in forward_edges if item['target'] in self.by_id],
+            'edges': backward_edges + forward_edges,
+            'provenance': 'registry-direct',
+        }
+
+    def mainline(self, workstream: str | None = None) -> dict[str, Any]:
+        mainline_paths = set(infer_mainline_doc_paths(self.rows, self.cfg))
+        candidate_rows = [
+            row for row in self.rows
+            if row.get('lifecycle_status') == 'active'
+            and (not mainline_paths or row.get('doc_path') in mainline_paths)
+        ]
+        if workstream:
+            candidate_rows = [row for row in candidate_rows if row.get('workstream') == workstream]
+        heads = [row for row in candidate_rows if not csv_ids(row.get('superseded_by', ''))]
+        return {
+            'query': 'mainline',
+            'workstream': workstream or '',
+            'execution_policy': infer_execution_policy(self.rows, self.cfg),
+            'heads': [row_summary(row) for row in heads],
+            'mainline_doc_paths': sorted(mainline_paths),
+            'provenance': 'registry-derived',
+        }
+
+    def impact(self, plan_id: str) -> dict[str, Any]:
+        row = self.by_id.get(plan_id)
+        if not row:
+            return {'error': f'plan_id not found: {plan_id}', 'plan_id': plan_id}
+        impacted: dict[str, dict[str, Any]] = {}
+
+        def add(target_id: str, reason: str, provenance: str = 'registry-direct') -> None:
+            target = self.by_id.get(target_id)
+            if not target or target_id == plan_id:
+                return
+            entry = impacted.setdefault(target_id, {
+                'plan': row_summary(target),
+                'reasons': [],
+            })
+            entry['reasons'].append({'reason': reason, 'provenance': provenance})
+
+        for target in self.supersedes_by_source.get(plan_id, []):
+            add(target, 'superseded predecessor')
+        for target in self.superseded_by_source.get(plan_id, []):
+            add(target, 'superseding successor')
+        parent = row.get('parent_plan', '').strip()
+        if parent:
+            add(parent, 'parent plan')
+        for child in self.children_by_parent.get(plan_id, []):
+            add(child, 'child plan')
+        for peer_id in self.workstream_index.get(row.get('workstream', '') or 'general', []):
+            add(peer_id, 'same workstream', 'registry-derived')
+
+        return {
+            'query': 'impact',
+            'plan': row_summary(row),
+            'impacted': list(impacted.values()),
+            'provenance': 'registry-derived',
+        }
+
+    def integrity_errors(self) -> list[str]:
+        errors: list[str] = []
+        errors.extend(self._supersession_cycle_errors())
+        for row in self.rows:
+            parent = row.get('parent_plan', '').strip()
+            if not parent:
+                continue
+            parent_row = self.by_id.get(parent)
+            if not parent_row:
+                errors.append(f'orphan parent_plan for {row["doc_path"]}: {parent}')
+            elif parent_row.get('lifecycle_status') in {'closed', 'rejected', 'archived'}:
+                errors.append(f'parent_plan points to non-active parent for {row["doc_path"]}: {parent} lifecycle={parent_row.get("lifecycle_status")}')
+        return errors
+
+    def _walk_supersedes(self, plan_id: str, direction: str) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        seen: set[str] = set()
+        stack = list(self.supersedes_by_source.get(plan_id, []) if direction == 'backward' else self.superseded_by_source.get(plan_id, []))
+        while stack:
+            target = stack.pop(0)
+            if target in seen:
+                continue
+            seen.add(target)
+            if target not in self.by_id:
+                result.append(edge(plan_id, target, 'missing-supersession-target'))
+                continue
+            result.append(edge(plan_id if direction == 'backward' else plan_id, target, 'supersedes' if direction == 'backward' else 'superseded_by'))
+            next_targets = self.supersedes_by_source.get(target, []) if direction == 'backward' else self.superseded_by_source.get(target, [])
+            stack.extend(next_targets)
+        return result
+
+    def _supersession_cycle_errors(self) -> list[str]:
+        errors: list[str] = []
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(plan_id: str, path: list[str]) -> None:
+            if plan_id in visiting:
+                cycle_start = path.index(plan_id) if plan_id in path else 0
+                cycle = path[cycle_start:] + [plan_id]
+                errors.append(f'supersession cycle: {" -> ".join(cycle)}')
+                return
+            if plan_id in visited:
+                return
+            visiting.add(plan_id)
+            for target in self.supersedes_by_source.get(plan_id, []):
+                if target in self.by_id:
+                    visit(target, path + [target])
+            visiting.remove(plan_id)
+            visited.add(plan_id)
+
+        for plan_id in self.by_id:
+            visit(plan_id, [plan_id])
+        return sorted(set(errors))
+
+
+def load_graph(repo_root: Path, cfg: dict[str, Any]) -> PlanGraph | None:
+    rows = load_registry_rows_for_update(repo_root, cfg)
+    if rows is None:
+        return None
+    return PlanGraph(rows, cfg)
+
+
+def run_graph(repo_root: Path, cfg: dict[str, Any], ids: list[str], workstream: str | None = None) -> int:
+    if not ids:
+        print('ERROR: graph requires a query: mainline, lineage, or impact')
+        return 2
+    query = ids[0]
+    graph = load_graph(repo_root, cfg)
+    if graph is None:
+        return 1
+    if query == 'mainline':
+        result = graph.mainline(workstream)
+    elif query == 'lineage':
+        if len(ids) != 2:
+            print('ERROR: graph lineage requires exactly one plan_id')
+            return 2
+        result = graph.lineage(ids[1])
+    elif query == 'impact':
+        if len(ids) != 2:
+            print('ERROR: graph impact requires exactly one plan_id')
+            return 2
+        result = graph.impact(ids[1])
+    else:
+        print(f'ERROR: unknown graph query: {query}')
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
 
 
 def normalize_repo_paths(paths: Any) -> set[str]:
@@ -1216,7 +1542,7 @@ def write_timeline(repo_root: Path, cfg: dict[str, Any]) -> None:
     report = [
         '# Plan Timeline Report',
         '',
-        'Generated by `plan-governance`.',
+        'Generated by `PlanGraph`.',
         '',
         f'Execution policy: `{execution_policy}`.',
         'Only documents in `Current Mainline` are actionable.',
@@ -1271,6 +1597,7 @@ def lint(repo_root: Path, cfg: dict[str, Any]) -> int:
         print('LINT ERROR: registry missing')
         return 1
     rows = parse_registry_rows(registry_path.read_text(encoding='utf-8'))
+    graph = PlanGraph(rows, cfg)
     row_by_plan_id = registry_plan_map(rows)
     q_path = repo_root / cfg.get('quarantine_path', 'docs/plan_quarantine.md')
     quarantined_paths = set()
@@ -1351,11 +1678,13 @@ def lint(repo_root: Path, cfg: dict[str, Any]) -> int:
             continue
         errors.append(f'unregistered candidate doc: {path}')
 
+    errors.extend(graph.integrity_errors())
+
     if errors:
         for e in errors:
             print(f'LINT ERROR: {e}')
         return 1
-    print('plan-governance lint: ok')
+    print('plangraph lint: ok')
     return 0
 
 
@@ -1511,16 +1840,16 @@ def install_agents_block(repo_root: Path) -> None:
     snippet = DEFAULT_AGENTS_SNIPPET.read_text(encoding='utf-8').rstrip() + '\n'
     if not agents_path.exists():
         agents_path.write_text(snippet, encoding='utf-8')
-        print('install-agents-block: created AGENTS.md with managed plan-governance block')
+        print('install-agents-block: created AGENTS.md with managed plangraph block')
         return
     content = agents_path.read_text(encoding='utf-8')
-    if AGENTS_BLOCK_START in content:
+    if AGENTS_BLOCK_START in content or LEGACY_AGENTS_BLOCK_START in content:
         print('install-agents-block: managed block already present')
         return
     if not content.endswith('\n'):
         content += '\n'
     agents_path.write_text(content + '\n' + snippet, encoding='utf-8')
-    print('install-agents-block: appended managed plan-governance block to AGENTS.md')
+    print('install-agents-block: appended managed plangraph block to AGENTS.md')
 
 
 def remove_agents_block(repo_root: Path) -> None:
@@ -1529,14 +1858,21 @@ def remove_agents_block(repo_root: Path) -> None:
         print('remove-agents-block: AGENTS.md not found')
         return
     content = agents_path.read_text(encoding='utf-8')
-    pattern = re.compile(r'\n?' + re.escape(AGENTS_BLOCK_START) + r'.*?' + re.escape(AGENTS_BLOCK_END) + r'\n?', re.DOTALL)
+    pattern = re.compile(
+        r'\n?('
+        + re.escape(AGENTS_BLOCK_START) + r'.*?' + re.escape(AGENTS_BLOCK_END)
+        + r'|'
+        + re.escape(LEGACY_AGENTS_BLOCK_START) + r'.*?' + re.escape(LEGACY_AGENTS_BLOCK_END)
+        + r')\n?',
+        re.DOTALL,
+    )
     updated = pattern.sub('\n', content, count=1)
     if updated == content:
         print('remove-agents-block: managed block not present')
         return
     normalized = updated.strip('\n')
     agents_path.write_text((normalized + '\n') if normalized else '', encoding='utf-8')
-    print('remove-agents-block: removed managed plan-governance block from AGENTS.md')
+    print('remove-agents-block: removed managed plangraph block from AGENTS.md')
 
 
 def run_bootstrap(repo_root: Path, skip_install_agents_block: bool = False) -> None:
@@ -1580,11 +1916,12 @@ def run_refresh(repo_root: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['init', 'bootstrap', 'refresh', 'register', 'lint', 'report', 'install-agents-block', 'remove-agents-block', 'close', 'supersede'])
+    parser.add_argument('command', choices=['init', 'bootstrap', 'refresh', 'register', 'graph', 'lint', 'report', 'install-agents-block', 'remove-agents-block', 'close', 'supersede'])
     parser.add_argument('ids', nargs='*')
     parser.add_argument('--repo-root', default=os.getcwd())
     parser.add_argument('--lifecycle-status', default='closed')
     parser.add_argument('--execution-status')
+    parser.add_argument('--workstream')
     parser.add_argument('--skip-install-agents-block', action='store_true')
     args = parser.parse_args()
     repo_root = Path(args.repo_root).resolve()
@@ -1599,6 +1936,10 @@ def main() -> int:
             return 2
         cfg = load_effective_config(repo_root)
         return run_register(repo_root, cfg, args.ids[0])
+
+    if args.command == 'graph':
+        cfg = load_effective_config(repo_root)
+        return run_graph(repo_root, cfg, args.ids, workstream=args.workstream)
 
     cfg = ensure_repo_files(repo_root)
 

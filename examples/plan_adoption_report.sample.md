@@ -2,7 +2,7 @@
 
 Generated: 2026-06-17
 
-This report is read-only. It helps you understand which files may be plans before this project starts using plan governance.
+This report is read-only. It helps you understand which files may be plans before this project starts using PlanGraph.
 
 ## Quick Answer
 

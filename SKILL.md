@@ -1,15 +1,25 @@
 ---
-name: plan-governance
-description: Plan governance for project planning documents. Use when project-level plan docs need adoption analysis, lifecycle governance, registry maintenance, or autonomous upkeep after plans are created, changed, replaced, or reviewed.
+name: plangraph
+description: Local-first planning graph for project plan documents. Use when project-level plans need adoption analysis, lifecycle governance, mainline detection, lineage, impact analysis, conflict checks, registry maintenance, or autonomous upkeep after plans are created, changed, replaced, or reviewed.
 ---
 
-# Plan Governance
+# PlanGraph
 
 ## Overview
 
-Govern project planning documents through a single registry, derived timeline report, and lifecycle-aware lint rules. This skill separates active execution docs from reference, state, decision, evidence, and closed historical docs without hard-coding one project's conventions into the skill itself.
+PlanGraph is a local-first planning graph for AI agents. It helps agents understand which project plan is current, how plans evolved, what a plan supersedes, what may be affected by changing it, and which historical documents should remain governed but non-executable.
 
-After installation, users should normally invoke this skill through natural-language requests in Codex, not by typing script paths manually. The Python commands shown below are the underlying operations the skill may use when it needs deterministic file updates.
+The current implementation is deterministic and registry-driven. It uses:
+
+1. `docs/plan_registry.md` as the canonical registry.
+2. `docs/plan_timeline_report.md` as a derived analytical report.
+3. `docs/plan_adoption_report.md` as a read-only first-pass report for existing repos.
+4. `.plangraph.yml` and `.plangraph.ignore` as the current config files.
+5. in-memory graph queries for mainline, lineage, and impact.
+
+SQLite indexing, MCP server support, body-link extraction, and semantic edges are planned phases, not required for the current skill workflow.
+
+After installation, users should normally invoke this skill through natural-language requests in Codex, not by typing script paths manually. The Python commands shown below are implementation details the skill may use when deterministic file updates or graph queries are needed.
 
 ## When to Use
 
@@ -18,15 +28,17 @@ Use this skill when the work involves any of these:
 - creating a new project plan or execution checklist
 - adopting a repo with many old planning docs and unclear current status
 - deciding whether a document is active, closed, superseded, deferred, or reference-only
-- generating a canonical plan registry or timeline report
+- generating or maintaining a canonical plan registry
+- finding the current planning mainline
+- checking lineage, impact, or conflicts before modifying a plan
 - replacing an old plan with a new one
 - linting plan lifecycle consistency before merge
 
 Do not use this skill for:
 
-- ordinary code changes that do not touch planning docs
+- ordinary code changes that do not touch or depend on planning docs
 - pure chat or brainstorming without file changes
-- editing one project document when its status is already obvious and no lifecycle change is involved
+- editing one project document when its status is already obvious and no lifecycle or graph relationship changes
 
 ## Installed Usage
 
@@ -34,57 +46,59 @@ User-facing entrypoints should stay narrow. The installed-skill trigger phrases 
 
 **English**
 
-- `Use $plan-governance to analyze adoption for this repo.`
-- `Use $plan-governance to enable plan governance.`
+- `Use $plangraph to analyze this repo.`
+- `Use $plangraph to enable planning graph.`
 
 **简体中文**
 
-- `用 $plan-governance 接入分析这个仓库`
-- `用 $plan-governance 启用计划治理`
+- `用 $plangraph 分析这个仓库`
+- `用 $plangraph 启用计划图谱`
 
 Their intent mapping is fixed regardless of language:
 
-- `Use $plan-governance to analyze adoption for this repo.` / `用 $plan-governance 接入分析这个仓库` -> run `init`, produce the adoption report, and do not create registry or AGENTS rules.
-- `Use $plan-governance to enable plan governance.` / `用 $plan-governance 启用计划治理` -> run `bootstrap`, create governance files, and install the managed AGENTS block unless the user explicitly refuses.
+- `Use $plangraph to analyze this repo.` / `用 $plangraph 分析这个仓库` -> run `init`, produce the adoption report, and do not create registry or AGENTS rules.
+- `Use $plangraph to enable planning graph.` / `用 $plangraph 启用计划图谱` -> run `bootstrap`, create governance files, and install the managed AGENTS block unless the user explicitly refuses.
 
 For end users, those two entrypoints are the primary interface. The CLI commands in this file are mainly for implementation clarity, testing, and deterministic execution.
 
-Do not make the user drive routine lifecycle maintenance by hand. After governance is enabled, this skill should proactively choose the appropriate internal action when a task creates, replaces, closes, or audits plan documents.
+Do not make the user drive routine lifecycle maintenance by hand. After PlanGraph is enabled, this skill should proactively choose the appropriate internal action when a task creates, replaces, closes, audits, or depends on plan documents.
 
 When adapting a brownfield repo, do as much deterministic cleanup as possible before asking the user: infer obvious closed or deferred docs, detect conservative revision chains, separate the current actionable mainline from governed but non-executable plans, refresh derived outputs, and then ask only about real ambiguity.
 
 ## Autonomous Behavior After Enablement
 
-Plan governance is active when `docs/plan_registry.md` exists.
+PlanGraph is active when `docs/plan_registry.md` exists.
 
 In an active repo, this skill should normally do the following without asking the user to name the internal command:
 
 - after a new plan doc is created, register it or refresh discovery as appropriate
 - after a plan clearly replaces an older plan, link them through supersession
 - after a plan is clearly finished with no successor, close it
-- after plan-governance mutations, run lint and refresh derived outputs
+- before modifying an important plan, query lineage and impact when that context matters
+- after PlanGraph mutations, run lint and refresh derived outputs
 
-Ask the user only when a real governance ambiguity exists, such as:
+Ask the user only when a real governance or graph ambiguity exists, such as:
 
 - several candidate plans may all be current
 - it is unclear whether a new doc supersedes an old one or coexists with it
 - a brownfield repo has messy historical docs and bootstrapping would encode the wrong source of truth
 - the skill can detect a revision family but cannot safely decide which document is the successor
+- a graph relation is soft or inferred rather than registry-backed
 
-If a repo has no meaningful project plan docs and none are being created, do not force plan governance on it. A repo can remain outside governance until project-level planning documents actually matter.
+If a repo has no meaningful project plan docs and none are being created, do not force PlanGraph on it. A repo can remain outside governance until project-level planning documents actually matter.
 
 ## Core Model
 
-This skill manages three layers:
+The current implementation manages four layers:
 
 1. `docs/plan_registry.md` is the canonical registry.
 2. `docs/plan_timeline_report.md` is a derived analytical report.
 3. `docs/plan_adoption_report.md` is a read-only first-pass report for existing repos.
-4. `.plan-governance.yml` and `.plan-governance.ignore` adapt the skill to each repo.
+4. graph queries derive mainline, lineage, and impact from registry rows.
 
-The skill supports multiple active workstreams. It does not assume there is only one active plan in the whole repo. Instead, it enforces one canonical registry and requires each registered document to declare its role and lifecycle clearly.
+PlanGraph supports multiple active workstreams. It does not assume there is only one active plan in the whole repo. Instead, it enforces one canonical registry and requires each registered document to declare its role and lifecycle clearly.
 
-`active` does not always mean executable. The timeline report separates the current actionable mainline from other governed active plans, deferred plans, references, closed plans, and superseded plans.
+`active` does not always mean executable. The timeline report and graph queries separate the current actionable mainline from other governed active plans, deferred plans, references, closed plans, and superseded plans.
 
 ## First Use in an Existing Repo
 
@@ -98,9 +112,9 @@ python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py init --repo-r
 
 `init` is read-only. It writes `docs/plan_adoption_report.md` and does not create or modify the registry, quarantine, or repo config files.
 
-Read the report first if the repo already has many plan-like docs, old iterations, or multiple AI-generated plans. Only run `bootstrap` after you agree on which docs are current.
+Read the report first if the repo already has many plan-like docs, old iterations, or multiple AI-generated plans. Only run `bootstrap` after the current mainline and historical docs are understood well enough to avoid encoding the wrong source of truth.
 
-For a brand-new repo, the skill can skip `init` and go straight to `bootstrap` when the user asks to enable plan governance from day one.
+For a brand-new repo, the skill can skip `init` and go straight to `bootstrap` when the user asks to enable PlanGraph from day one.
 
 ## Lifecycle Rules
 
@@ -114,28 +128,6 @@ Closed or superseded documents should not receive new substantive body content. 
 
 ## Workflow
 
-### 1. Bootstrap an existing repo
-
-When the user confirms governance should be enabled, the skill should run `bootstrap`.
-
-By default, enabling plan governance also installs the managed `AGENTS.md` block so future agents keep the registry and lifecycle state in sync. Skip this only if the user explicitly says not to modify `AGENTS.md`.
-
-Underlying command:
-
-```bash
-python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py bootstrap --repo-root "$(pwd)"
-```
-
-This will:
-
-- create `.plan-governance.yml` and `.plan-governance.ignore` if missing
-- scan candidate docs
-- classify them with confidence scores
-- register high-confidence docs into `docs/plan_registry.md`
-- send low-confidence docs to `docs/plan_quarantine.md`
-- render `docs/plan_timeline_report.md`
-- install the managed `AGENTS.md` block by default
-
 ### 0. Inspect a brownfield repo
 
 Use `init` first when the repo already exists and you do not yet know which plan docs are current.
@@ -148,9 +140,31 @@ The report explains, in plain language:
 - which files were skipped and why
 - what to do next
 
+### 1. Enable PlanGraph
+
+When the user confirms PlanGraph should be enabled, the skill should run `bootstrap`.
+
+By default, enabling PlanGraph also installs the managed `AGENTS.md` block so future agents keep the registry and graph state in sync. Skip this only if the user explicitly says not to modify `AGENTS.md`.
+
+Underlying command:
+
+```bash
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py bootstrap --repo-root "$(pwd)"
+```
+
+This will:
+
+- create `.plangraph.yml` and `.plangraph.ignore` if missing
+- scan candidate docs
+- classify them with confidence scores
+- register high-confidence docs into `docs/plan_registry.md`
+- send low-confidence docs to `docs/plan_quarantine.md`
+- render `docs/plan_timeline_report.md`
+- install the managed `AGENTS.md` block by default
+
 ### 2. Refresh after new docs appear
 
-After governance is active, prefer `refresh` as an internal maintenance action when several new docs may need discovery.
+After PlanGraph is active, prefer `refresh` as an internal maintenance action when several new docs may need discovery.
 
 ```bash
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py refresh --repo-root "$(pwd)"
@@ -180,7 +194,19 @@ Prefer `refresh` when:
 
 This skill does not auto-trigger in the background. The agent using the skill should proactively follow up with `register` or `refresh` as part of the same task.
 
-### 3. Lint plan governance
+### 3. Query PlanGraph
+
+Use graph queries before modifying important plans or when deciding which plan is current.
+
+```bash
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph mainline --repo-root "$(pwd)"
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph lineage <plan_id> --repo-root "$(pwd)"
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph impact <plan_id> --repo-root "$(pwd)"
+```
+
+Graph query output is JSON. It is intended for agent consumption, not prose scraping. Treat `registry-direct` and `manual-confirmed` relationships as stronger evidence than inferred or derived relationships.
+
+### 4. Lint PlanGraph state
 
 After any registry-changing action, the skill should normally run `lint` before declaring the governance state healthy.
 
@@ -197,8 +223,9 @@ This checks for:
 - multiple authoritative execution docs in the same workstream
 - changed body content in closed or superseded docs when a git baseline exists
 - broken or asymmetric `supersedes` / `superseded_by` links
+- graph-level issues such as supersession cycles and orphan parents
 
-### 4. Close or supersede a plan
+### 5. Close or supersede a plan
 
 These are internal lifecycle actions the skill should choose when the task context makes the intent clear.
 
@@ -209,29 +236,23 @@ python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py supersede <ol
 
 `close` marks a registry row closed and non-authoritative. `supersede` marks the old row superseded, links both rows, and refreshes the derived timeline. If a governed document already has frontmatter, matching metadata keys are updated without adding substantive body content.
 
-### 5. Install AGENTS guidance
+### 6. Install or remove AGENTS guidance
 
-When a repo wants governance expectations written into local instructions, the skill can install the managed AGENTS block. This is the default behavior during `bootstrap` unless the user explicitly opts out.
+When a repo wants PlanGraph expectations written into local instructions, the skill can install the managed AGENTS block. This is the default behavior during `bootstrap` unless the user explicitly opts out.
 
 ```bash
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py install-agents-block --repo-root "$(pwd)"
-```
-
-This inserts a managed block into `AGENTS.md` if the repo wants that behavior.
-
-### 6. Remove managed AGENTS guidance
-
-If the repo should stop enforcing plan-governance rules through `AGENTS.md`, remove only the managed block. This does not delete the registry, reports, or config files.
-
-```bash
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py remove-agents-block --repo-root "$(pwd)"
 ```
 
+Removing the block does not delete the registry, reports, or config files.
+
 ### New repo / new plan rule of thumb
 
-- New repo, governance from day one: the skill should use `bootstrap`.
+- New repo, PlanGraph from day one: the skill should use `bootstrap`.
 - Existing repo with unclear history: the skill should use `init`, then `bootstrap` after review.
 - New plan created by another skill: the skill should register or refresh it immediately, then lint.
+- Before changing an important current plan: query `graph lineage` and `graph impact` if historical context matters.
 
 ## Project Adaptation
 
@@ -243,12 +264,12 @@ Read these references before changing classification rules or status enums:
 
 Adaptation is done through config and ignore files, not by rewriting the skill for one project.
 
-## Removing Governance Impact
+## Removing PlanGraph Impact
 
 There are two levels of rollback:
 
 1. Stop instruction-level enforcement: remove the managed `AGENTS.md` block.
-2. Stop using the governance files: treat `docs/plan_registry.md`, `docs/plan_timeline_report.md`, `docs/plan_quarantine.md`, `.plan-governance.yml`, and `.plan-governance.ignore` as ordinary repo files and decide separately whether the project wants to keep or delete them.
+2. Stop using the registry and reports: treat `docs/plan_registry.md`, `docs/plan_timeline_report.md`, `docs/plan_quarantine.md`, `.plangraph.yml`, and `.plangraph.ignore` as ordinary repo files and decide separately whether the project wants to keep or delete them.
 
 This skill only automates the first level. It does not automatically delete governance artifacts, because those files may contain project history the team wants to preserve.
 
@@ -260,8 +281,9 @@ This skill manages or generates:
 - `docs/plan_registry.md`
 - `docs/plan_timeline_report.md`
 - `docs/plan_quarantine.md`
-- `.plan-governance.yml`
-- `.plan-governance.ignore`
+- `.plangraph.yml`
+- `.plangraph.ignore`
+- JSON graph query output for mainline, lineage, and impact
 
 ## Common Mistakes
 
@@ -269,4 +291,5 @@ This skill manages or generates:
 - Editing closed historical docs instead of superseding them.
 - Letting report files or chat transcripts enter the registry.
 - Using the derived timeline report as the source of truth.
+- Treating inferred graph relationships as registry facts.
 - Overwriting human registry corrections during refresh.
