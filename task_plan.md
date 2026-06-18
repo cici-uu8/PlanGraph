@@ -19,7 +19,7 @@ Move the repository public surface into a standalone `plangraph` product context
 | 9. Add CI lint template and PyYAML fallback tests | complete | GitHub Actions lint sample exists; config/frontmatter reads fall back without PyYAML |
 | 10. Add read-only body-link graph extraction | complete | `graph body-links [plan_id]` returns `body-link` edges, external references, and unresolved refs without registry writes |
 | 11. Record Phase 4 Stop/Go and classify external references | complete | real validation stopped SQLite; outside-repo links are structured `external_reference` context |
-| 12. Add external-reference adoption workflow | in progress | dry-run/apply command localizes useful external Markdown refs before any SQLite work |
+| 12. Add external-reference adoption workflow | complete | dry-run/apply command localized useful external Markdown refs in a real repo; post-apply graph had edge=9, unresolved=0, external=4 |
 
 ## Acceptance Criteria
 
@@ -40,5 +40,8 @@ Move the repository public surface into a standalone `plangraph` product context
 
 - SQLite index and `.plangraph/` persisted graph storage are not implemented.
 - MCP server and host install/uninstall commands are not implemented.
-- Markdown body-link extraction has a read-only v0.3 query implementation. Real-repo Stop/Go paused SQLite because repo-local edges were sparse and outside-repo links dominated; the current stabilization step classifies and can optionally localize useful outside-repo Markdown references.
+- Markdown body-link extraction has a read-only v0.3 query implementation. Real-repo Stop/Go initially paused SQLite because repo-local edges were sparse and outside-repo links dominated.
+- External-reference adoption is complete for the current v0.3.x line: `adopt-external-references --apply` localized 4 useful external Markdown refs into the oncall plan-update repo, rewrote links, registered imported docs as non-authoritative governed context, and improved body-links from `edge_count=1 / unresolved_count=8` to `edge_count=9 / unresolved_count=0 / external_reference_count=4`.
+- Current release decision: freeze the deterministic `v0.3.x` line at `v0.3.2` for now. Do not tag `v0.4.0` for external-reference adoption; `v0.4` is reserved for SQLite.
+- Enter `v0.4 SQLite` only after a new Go condition proves the in-memory graph is insufficient, such as repeated high-frequency graph queries, clear multi-agent read pressure, FTS/indexing needs, or another real repo showing stable enough relationship density to benefit from persisted indexing.
 - Semantic edges and embedding-backed conflict detection are not implemented.
