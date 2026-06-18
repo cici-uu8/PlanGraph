@@ -208,6 +208,8 @@ python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph body-li
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py adopt-external-references --repo-root "$(pwd)"
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py index --repo-root "$(pwd)"
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py status --repo-root "$(pwd)"
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py sync --repo-root "$(pwd)"
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py query <text> --repo-root "$(pwd)"
 ```
 
 Graph query output is JSON. It is intended for agent consumption, not prose scraping. Treat `registry-direct` and `manual-confirmed` relationships as stronger evidence than inferred or derived relationships.
@@ -242,7 +244,7 @@ This checks for:
 
 Outside-repo local Markdown links are reported as `external_reference` context instead of failing lint by default. Missing repo-local links still fail lint because they point at broken or unregistered documents inside the governed repo.
 
-After adopting external references, run `graph body-links` again. Use `index` to build the local SQLite cache when persisted graph status, future MCP reads, or multi-agent read stability matter. Use `status` to check whether the cache exists and whether it is stale after registry or plan-document changes.
+After adopting external references, run `graph body-links` again. Use `index` to build the local SQLite cache when persisted graph status, future MCP reads, or multi-agent read stability matter. Use `status` to check whether the cache exists and whether it is stale after registry or plan-document changes. Use `sync` to rebuild missing, stale, or old-schema indexes. Use `query` for SQLite-backed text search over indexed plan titles, paths, bodies, and notes.
 
 ### 5. Close or supersede a plan
 

@@ -599,18 +599,22 @@ Stop / Go：
 
 - `index` 全量重建（已完成第一版）
 - `status` 显示节点、边、文件、unresolved、external reference、schema 和 stale 状态（已完成第一版）
+- `sync` 重建 missing/stale/old-schema index（已完成第一版）
+- `query` 提供 SQLite-backed FTS 查询（已完成第一版）
 - registry 与索引不一致时能提示重建（已完成 registry/doc/config/ignore 文件指纹检查）
 - `.plangraph/` 不进入 scan candidates（已完成默认排除）
-- `sync` 增量更新
-- FTS 查询
+- `sync` 增量更新优化
 
 当前状态：
 
-- 第一段本地实现已完成：`index` 会创建 `.plangraph/plangraph.db`，写入 `metadata`、`nodes`、`edges`、`files`、`unresolved_refs` 和 `external_refs`。
+- 第一段本地实现已完成：`index` 会创建 `.plangraph/plangraph.db`，写入 `metadata`、`nodes`、`edges`、`files`、`unresolved_refs`、`external_refs` 和 `node_fts`。
 - `status` 是只读命令，报告 `db_path`、`exists`、`stale`、`schema_version`、`node_count`、`edge_count`、`file_count`、`unresolved_count`、`external_reference_count` 和 `registry_row_count`。
+- `sync` 会在索引 missing、stale 或 schema 过期时全量重建；当前先用可理解的全量 rebuild，后续再优化增量。
+- `query <text>` 会拒绝 stale index，并通过 `node_fts` 查询 indexed title/path/body/notes。
 - 索引仍是派生缓存，registry/frontmatter/body links 仍是真源。
 - 真实 oncall plan-update 仓库 smoke：`node_count=54`、`edge_count=69`、`file_count=57`、`unresolved_count=0`、`external_reference_count=4`、`stale=false`。
-- 下一段优先级是 `sync` / FTS / MCP 读取，而不是把 SQLite 变成 registry 写入源。
+- 真实 oncall plan-update query smoke：`query RAG` 返回 20 条 FTS 结果，`sync` 在 schema 2 后为 `action=noop`。
+- 下一段优先级是 MCP 读取和 context 查询，而不是把 SQLite 变成 registry 写入源。
 
 Stop / Go：
 
@@ -711,8 +715,8 @@ Stop / Go：
 如果以成熟 PlanGraph 为目标，当前执行阶段已经切到 `v0.4 SQLite` 本地开发。优先级是：
 
 1. 保持 `v0.3.x` 确定性能力稳定：graph conflicts、去 PyYAML 依赖、CI lint 样例、只读正文链接抽取、external-reference classification、adoption apply 和真实仓库治理收口不能回退。
-2. 完成 SQLite 底座：`index`、`status`、stale detection、`.plangraph/` scan exclusion 已完成第一版，后续补 `sync`、FTS 和更稳定的索引查询入口。
-3. SQLite 形成稳定读取接口后进入 MCP：先让 MCP 读取索引和现有 graph 查询，不让 MCP 成为新的真源。
+2. 完成 SQLite 底座：`index`、`status`、`sync`、`query`、stale detection、schema versioning、`.plangraph/` scan exclusion 已完成第一版，后续补更稳定的 context 查询入口。
+3. SQLite 已形成最小稳定读取接口，下一步进入 MCP：先让 MCP 读取索引和现有 graph 查询，不让 MCP 成为新的真源。
 4. 语义层始终晚于硬边和索引层，并且默认关闭；soft edge 必须和 hard edge 分开存储、分开展示。
 5. 本地开发期间可以持续 git commit，但不推 GitHub；等 SQLite / MCP / 语义层达到完整边界后再统一发布。
 

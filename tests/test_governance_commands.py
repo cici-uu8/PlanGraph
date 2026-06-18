@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import subprocess
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -142,7 +143,7 @@ class GovernanceCommandTests(unittest.TestCase):
             indexed_data = json.loads(indexed.stdout)
             self.assertTrue(indexed_data['exists'])
             self.assertFalse(indexed_data['stale'])
-            self.assertEqual(indexed_data['schema_version'], '1')
+            self.assertEqual(indexed_data['schema_version'], '2')
             self.assertEqual(indexed_data['node_count'], 2)
             self.assertGreaterEqual(indexed_data['edge_count'], 1)
             self.assertEqual(indexed_data['unresolved_count'], 0)
@@ -195,6 +196,103 @@ class GovernanceCommandTests(unittest.TestCase):
             stale_paths = {item['path'] for item in data['stale_files']}
             self.assertNotIn('.plangraph.yml', stale_paths)
             self.assertNotIn('.plan-governance.yml', stale_paths)
+
+    def test_sync_rebuilds_stale_sqlite_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            write_minimal_repo_config(root)
+            run_cli(root, 'bootstrap', '--skip-install-agents-block')
+            (docs / 'week1_plan.md').write_text('# Week 1 Plan\n', encoding='utf-8')
+            run_cli(root, 'register', 'docs/week1_plan.md')
+            run_cli(root, 'index')
+            (docs / 'week1_plan.md').write_text('# Week 1 Plan\n\nUpdated local detail.\n', encoding='utf-8')
+
+            stale = run_cli(root, 'status')
+            stale_data = json.loads(stale.stdout)
+            self.assertTrue(stale_data['stale'])
+
+            synced = run_cli(root, 'sync')
+            synced_data = json.loads(synced.stdout)
+
+            self.assertEqual(synced_data['query'], 'sync')
+            self.assertEqual(synced_data['action'], 'rebuilt')
+            self.assertFalse(synced_data['status']['stale'])
+
+    def test_sync_rebuilds_old_schema_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            write_minimal_repo_config(root)
+            run_cli(root, 'bootstrap', '--skip-install-agents-block')
+            (docs / 'week1_plan.md').write_text('# Week 1 Plan\n', encoding='utf-8')
+            run_cli(root, 'register', 'docs/week1_plan.md')
+            run_cli(root, 'index')
+
+            db_path = root / '.plangraph' / 'plangraph.db'
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("UPDATE metadata SET value='1' WHERE key='schema_version'")
+
+            stale = run_cli(root, 'status')
+            stale_data = json.loads(stale.stdout)
+            self.assertTrue(stale_data['stale'])
+            self.assertIn('schema version mismatch', '\n'.join(stale_data['errors']))
+
+            synced = run_cli(root, 'sync')
+            synced_data = json.loads(synced.stdout)
+            self.assertEqual(synced_data['action'], 'rebuilt')
+            self.assertEqual(synced_data['status']['schema_version'], '2')
+
+    def test_query_uses_sqlite_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            write_minimal_repo_config(root)
+            run_cli(root, 'bootstrap', '--skip-install-agents-block')
+            (docs / 'week1_plan.md').write_text(
+                '# Week 1 Retrieval Plan\n\nThis plan covers retrieval ladder smoke testing.\n',
+                encoding='utf-8',
+            )
+            run_cli(root, 'register', 'docs/week1_plan.md')
+            run_cli(root, 'index')
+
+            result = run_cli(root, 'query', 'retrieval ladder')
+            data = json.loads(result.stdout)
+
+            self.assertEqual(data['query'], 'query')
+            self.assertEqual(data['text'], 'retrieval ladder')
+            self.assertFalse(data['stale'])
+            self.assertGreaterEqual(data['count'], 1)
+            self.assertEqual(data['results'][0]['doc_path'], 'docs/week1_plan.md')
+            self.assertIn(data['results'][0]['match_source'], {'fts', 'like'})
+
+    def test_query_refuses_stale_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            write_minimal_repo_config(root)
+            run_cli(root, 'bootstrap', '--skip-install-agents-block')
+            (docs / 'week1_plan.md').write_text('# Week 1 Plan\n\nOriginal.\n', encoding='utf-8')
+            run_cli(root, 'register', 'docs/week1_plan.md')
+            run_cli(root, 'index')
+            (docs / 'week1_plan.md').write_text('# Week 1 Plan\n\nChanged.\n', encoding='utf-8')
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), 'query', 'Changed', '--repo-root', str(root)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            data = json.loads(result.stdout)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(data['stale'])
+            self.assertEqual(data['error'], 'index stale')
+            self.assertIn('sync', data['suggestion'])
 
     def test_register_close_and_supersede_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -28,3 +28,6 @@
 - Added SQLite regression tests for index creation, stale registry detection, missing legacy config tracking, and `.plangraph` scan exclusion.
 - Verification passed after SQLite first slice: `python3 -m py_compile scripts/plan_governance.py scripts/generate_readme_assets.py tests/test_governance_commands.py tests/test_plan_graph.py`; `python3 -m unittest discover -s tests -p 'test_*.py'` reports 30 tests OK.
 - Real oncall plan-update smoke for SQLite first slice: `index` produced `.plangraph/plangraph.db` with `node_count=54`, `edge_count=69`, `file_count=57`, `unresolved_count=0`, `external_reference_count=4`, and `stale=false`.
+- Continued `v0.4 SQLite`: added schema version 2 with `node_fts`, `sync` for stale or old-schema rebuilds, and `query <text>` for SQLite-backed plan search. `query` refuses missing/stale indexes and tells the user to run `index` or `sync` instead of silently reading old data.
+- Verification passed after SQLite query/sync slice: `python3 -m py_compile scripts/plan_governance.py tests/test_governance_commands.py`; `python3 -m unittest discover -s tests -p 'test_*.py'` reports 34 tests OK.
+- Real oncall plan-update smoke for SQLite query/sync slice: `sync` reports `action=noop` after schema 2 rebuild; `query RAG` returns 20 FTS results from the indexed registry/body corpus with `stale=false`.

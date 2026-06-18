@@ -33,7 +33,7 @@ CONFIG_PATH = '.plangraph.yml'
 IGNORE_PATH = '.plangraph.ignore'
 INDEX_DIR = '.plangraph'
 INDEX_DB_PATH = '.plangraph/plangraph.db'
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 2
 LEGACY_CONFIG_PATH = '.plan-governance.yml'
 LEGACY_IGNORE_PATH = '.plan-governance.ignore'
 AGENTS_BLOCK_START = '<!-- PLANGRAPH START -->'
@@ -1756,6 +1756,7 @@ def ensure_index_schema(conn: sqlite3.Connection) -> None:
         DROP TABLE IF EXISTS files;
         DROP TABLE IF EXISTS unresolved_refs;
         DROP TABLE IF EXISTS external_refs;
+        DROP TABLE IF EXISTS node_fts;
 
         CREATE TABLE metadata (
             key TEXT PRIMARY KEY,
@@ -1828,6 +1829,14 @@ def ensure_index_schema(conn: sqlite3.Connection) -> None:
             trusted INTEGER NOT NULL,
             trusted_root TEXT NOT NULL,
             external_worktree TEXT NOT NULL
+        );
+
+        CREATE VIRTUAL TABLE node_fts USING fts5(
+            plan_id UNINDEXED,
+            title,
+            doc_path,
+            body,
+            notes
         );
         '''
     )
@@ -1986,6 +1995,24 @@ def rebuild_sqlite_index(repo_root: Path, cfg: dict[str, Any]) -> dict[str, Any]
                 for item in body_links_result.get('external_references', [])
             ],
         )
+        conn.executemany(
+            '''
+            INSERT INTO node_fts (plan_id, title, doc_path, body, notes)
+            VALUES (?, ?, ?, ?, ?)
+            ''',
+            [
+                (
+                    row.get('plan_id', ''),
+                    row.get('title', ''),
+                    row.get('doc_path', ''),
+                    doc_body((repo_root / row.get('doc_path', '')).read_text(encoding='utf-8', errors='ignore'))
+                    if (repo_root / row.get('doc_path', '')).is_file()
+                    else '',
+                    row.get('notes', ''),
+                )
+                for row in rows
+            ],
+        )
 
     return sqlite_status(repo_root, cfg, rows=rows)
 
@@ -2095,6 +2122,109 @@ def run_index(repo_root: Path, cfg: dict[str, Any]) -> int:
 def run_status(repo_root: Path, cfg: dict[str, Any]) -> int:
     result = sqlite_status(repo_root, cfg)
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
+def sqlite_query(repo_root: Path, cfg: dict[str, Any], text: str) -> dict[str, Any]:
+    status = sqlite_status(repo_root, cfg)
+    if not status['exists']:
+        return {
+            'query': 'query',
+            'text': text,
+            'stale': True,
+            'error': 'index missing',
+            'suggestion': 'run `plangraph index` first',
+            'results': [],
+            'count': 0,
+        }
+    if status['stale']:
+        return {
+            'query': 'query',
+            'text': text,
+            'stale': True,
+            'error': 'index stale',
+            'suggestion': 'run `plangraph sync` before querying',
+            'results': [],
+            'count': 0,
+        }
+
+    db_path = index_db_path(repo_root, cfg)
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        with sqlite3.connect(db_path) as conn:
+            try:
+                rows = conn.execute(
+                    '''
+                    SELECT plan_id, title, doc_path, body, notes
+                    FROM node_fts
+                    WHERE node_fts MATCH ?
+                    ORDER BY bm25(node_fts)
+                    LIMIT 20
+                    ''',
+                    (text,),
+                ).fetchall()
+                match_source = 'fts'
+            except sqlite3.DatabaseError:
+                rows = conn.execute(
+                    '''
+                    SELECT plan_id, title, doc_path, body, notes
+                    FROM node_fts
+                    WHERE title LIKE ? OR doc_path LIKE ? OR body LIKE ? OR notes LIKE ?
+                    LIMIT 20
+                    ''',
+                    tuple(f'%{text}%' for _ in range(4)),
+                ).fetchall()
+                match_source = 'like'
+
+            for row in rows:
+                plan_id = str(row[0])
+                if plan_id in seen:
+                    continue
+                seen.add(plan_id)
+                results.append({
+                    'plan_id': plan_id,
+                    'title': str(row[1]),
+                    'doc_path': str(row[2]),
+                    'match_source': match_source,
+                })
+    except sqlite3.DatabaseError as exc:
+        return {
+            'query': 'query',
+            'text': text,
+            'stale': True,
+            'error': f'index unreadable: {exc}',
+            'suggestion': 'run `plangraph sync` before querying',
+            'results': [],
+            'count': 0,
+        }
+
+    return {
+        'query': 'query',
+        'text': text,
+        'stale': False,
+        'count': len(results),
+        'results': results,
+        'status': status,
+    }
+
+
+def run_query(repo_root: Path, cfg: dict[str, Any], text: str) -> int:
+    result = sqlite_query(repo_root, cfg, text)
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 1 if result.get('error') else 0
+
+
+def run_sync(repo_root: Path, cfg: dict[str, Any]) -> int:
+    status = sqlite_status(repo_root, cfg)
+    if not status['exists'] or status['stale']:
+        rebuilt = rebuild_sqlite_index(repo_root, cfg)
+        if 'error' in rebuilt:
+            print(json.dumps({'query': 'sync', 'action': 'failed', 'status': rebuilt}, ensure_ascii=False, indent=2, sort_keys=True))
+            return 1
+        print(json.dumps({'query': 'sync', 'action': 'rebuilt', 'status': rebuilt}, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    print(json.dumps({'query': 'sync', 'action': 'noop', 'status': status}, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
 
@@ -2892,7 +3022,7 @@ def run_refresh(repo_root: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['init', 'bootstrap', 'refresh', 'register', 'graph', 'index', 'status', 'lint', 'report', 'adopt-external-references', 'install-agents-block', 'remove-agents-block', 'close', 'supersede'])
+    parser.add_argument('command', choices=['init', 'bootstrap', 'refresh', 'register', 'graph', 'index', 'status', 'sync', 'query', 'lint', 'report', 'adopt-external-references', 'install-agents-block', 'remove-agents-block', 'close', 'supersede'])
     parser.add_argument('ids', nargs='*')
     parser.add_argument('--repo-root', default=os.getcwd())
     parser.add_argument('--lifecycle-status', default='closed')
@@ -2925,6 +3055,17 @@ def main() -> int:
     if args.command == 'status':
         cfg = load_effective_config(repo_root)
         return run_status(repo_root, cfg)
+
+    if args.command == 'sync':
+        cfg = load_effective_config(repo_root)
+        return run_sync(repo_root, cfg)
+
+    if args.command == 'query':
+        if not args.ids:
+            print('ERROR: query requires text')
+            return 2
+        cfg = load_effective_config(repo_root)
+        return run_query(repo_root, cfg, ' '.join(args.ids))
 
     cfg = ensure_repo_files(repo_root)
 
