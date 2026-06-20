@@ -93,17 +93,17 @@ PlanGraph currently focuses on the deterministic foundation:
 - current mainline separation
 - proactive register / refresh / close / supersede maintenance
 - lint rules for registry and lifecycle consistency
-- in-memory graph queries for mainline, lineage, impact, deterministic conflicts, explicit Markdown body links, and outside-repo external references
+- in-memory graph queries for mainline, lineage, impact, deterministic context, deterministic conflicts, explicit Markdown body links, and outside-repo external references
 - dry-run/apply adoption for useful external Markdown references
 - local SQLite indexing for status, sync, FTS query, and stable read caches
-- a read-only stdio MCP server for status, mainline, query, lineage, impact, conflicts, and body-links
+- a read-only stdio MCP server for status, mainline, query, lineage, impact, context, conflicts, and body-links
 - explicit semantic soft-edge extraction for high-confidence cross-workstream, registry-zero-relation overlaps
 
 SQLite, MCP, and semantic edges are derived layers. The registry remains the source of truth; ordinary `query` stays deterministic text search, and semantic results are exposed only through the explicit `semantic` command.
 
 ## Release Surface
 
-The supported public surface is the deterministic PlanGraph workflow: adoption scan, bootstrap, registry maintenance, lifecycle lint, and graph queries for mainline, lineage, impact, conflicts, body links, and external references.
+The supported public surface is the deterministic PlanGraph workflow: adoption scan, bootstrap, registry maintenance, lifecycle lint, and graph queries for mainline, lineage, impact, context, conflicts, body links, and external references.
 
 SQLite, MCP, and semantic soft edges are local experimental product-foundation layers. They are useful for validating a more mature CodeGraph-like experience, but they should not be treated as the stable public API yet. In particular, semantic output is intentionally explicit and sparse: on the real validation repo, filtering reduced 42 raw overlap candidates to 1 registry-zero-relation cross-workstream edge.
 
@@ -139,7 +139,7 @@ This new plan replaces the old Week 2 retrieval plan.
 The agent links the new plan to the old one with `supersedes` / `superseded_by`.
 
 ```text
-Before changing the current plan, check its lineage, impact, and body links.
+Before changing the current plan, check its context, lineage, impact, and body links.
 ```
 
 The agent queries PlanGraph before choosing the source of truth.

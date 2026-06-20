@@ -350,12 +350,58 @@ class GovernanceCommandTests(unittest.TestCase):
             self.assertIn('plangraph_query', tool_names)
             self.assertIn('plangraph_lineage', tool_names)
             self.assertIn('plangraph_impact', tool_names)
+            self.assertIn('plangraph_context', tool_names)
             self.assertIn('plangraph_conflicts', tool_names)
             self.assertIn('plangraph_body_links', tool_names)
             call_payload = json.loads(messages[2]['result']['content'][0]['text'])
             self.assertEqual(call_payload['query'], 'query')
             self.assertEqual(call_payload['count'], 1)
             self.assertEqual(call_payload['results'][0]['doc_path'], 'docs/week1_plan.md')
+
+    def test_mcp_context_tool_returns_aggregated_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            write_minimal_repo_config(root)
+            run_cli(root, 'bootstrap', '--skip-install-agents-block')
+            (docs / 'roadmap.md').write_text('# Roadmap\n', encoding='utf-8')
+            (docs / 'week1_plan.md').write_text('# Week 1 Plan\n\nSee [decision](decision.md).\n', encoding='utf-8')
+            (docs / 'decision.md').write_text('# Decision\n', encoding='utf-8')
+            run_cli(root, 'register', 'docs/roadmap.md')
+            roadmap_id = row_for_doc(root, 'docs/roadmap.md')['plan_id']
+            rows = registry_rows(root)
+            rows[roadmap_id]['doc_role'] = 'master_plan'
+            rows[roadmap_id]['authoritative'] = 'true'
+            rows[roadmap_id]['notes'] = 'part of current mainline'
+            (docs / 'plan_registry.md').write_text(
+                '| plan_id | title | doc_path | doc_role | workstream | lifecycle_status | execution_status | authoritative | classification_source | confidence | parent_plan | supersedes | superseded_by | created_at | last_reviewed_at | notes |\n'
+                '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n'
+                + '\n'.join(
+                    '| ' + ' | '.join(rows[plan_id][key] for key in [
+                        'plan_id', 'title', 'doc_path', 'doc_role', 'workstream', 'lifecycle_status',
+                        'execution_status', 'authoritative', 'classification_source', 'confidence',
+                        'parent_plan', 'supersedes', 'superseded_by', 'created_at', 'last_reviewed_at', 'notes',
+                    ]) + ' |'
+                    for plan_id in rows
+                ) + '\n',
+                encoding='utf-8',
+            )
+            run_cli(root, 'register', 'docs/week1_plan.md')
+            run_cli(root, 'register', 'docs/decision.md')
+            week1_id = row_for_doc(root, 'docs/week1_plan.md')['plan_id']
+
+            messages = run_mcp_session(
+                root,
+                {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}},
+                {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'plangraph_context', 'arguments': {'plan_id': week1_id}}},
+            )
+            payload = json.loads(messages[1]['result']['content'][0]['text'])
+
+            self.assertEqual(payload['query'], 'context')
+            self.assertEqual(payload['plan']['plan_id'], week1_id)
+            self.assertEqual(payload['body_links']['edge_count'], 1)
+            self.assertGreaterEqual(payload['must_read_count'], 2)
 
     def test_semantic_edges_are_explicit_soft_hints(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -24,6 +24,7 @@ Move the repository public surface into a standalone `plangraph` product context
 | 14. Continue v0.5 MCP server | in progress | `mcp` stdio server handles status/mainline/query plus lineage/impact/conflicts/body-links |
 | 15. Continue v0.6 semantic soft edges | in progress | `semantic` is explicit only; ordinary `query` excludes semantic results; soft edges must be registry-zero-relation and cross-workstream |
 | 16. Close deterministic-core dogfooding P0 fixes | complete | external-user trial on `/Users/cici/anomaly_detection` exposed scan-scope trust disclosure and `strict_mainline` multi-head conflict gaps; targeted tests cover both fixes |
+| 17. Add deterministic context v1 | complete | `graph context <plan_id>` and `plangraph_context` aggregate mainline, lineage, impact, conflicts, body links, and must-read docs; full test suite reports 42 passing tests |
 
 ## Acceptance Criteria
 

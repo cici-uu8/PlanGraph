@@ -15,9 +15,9 @@ The current implementation is deterministic and registry-driven. It uses:
 2. `docs/plan_timeline_report.md` as a derived analytical report.
 3. `docs/plan_adoption_report.md` as a read-only first-pass report for existing repos.
 4. `.plangraph.yml` and `.plangraph.ignore` as the current config files.
-5. in-memory graph queries for mainline, lineage, impact, conflicts, and body links.
+5. in-memory graph queries for mainline, lineage, impact, context, conflicts, and body links.
 6. optional local SQLite indexing under `.plangraph/plangraph.db` for persisted graph status and MCP reads.
-7. an optional stdio MCP server for read-only status, mainline, query, lineage, impact, conflicts, and body-link tools.
+7. an optional stdio MCP server for read-only status, mainline, query, lineage, impact, context, conflicts, and body-link tools.
 
 SQLite indexing, MCP reads, and semantic soft edges are derived layers. They do not replace the registry as the source of truth.
 
@@ -96,7 +96,7 @@ The current implementation manages four layers:
 1. `docs/plan_registry.md` is the canonical registry.
 2. `docs/plan_timeline_report.md` is a derived analytical report.
 3. `docs/plan_adoption_report.md` is a read-only first-pass report for existing repos.
-4. graph queries derive mainline, lineage, impact, conflicts, and body links from registry rows and repo files.
+4. graph queries derive mainline, lineage, impact, context, conflicts, and body links from registry rows and repo files.
 
 PlanGraph supports multiple active workstreams. It does not assume there is only one active plan in the whole repo. Instead, it enforces one canonical registry and requires each registered document to declare its role and lifecycle clearly.
 
@@ -206,6 +206,7 @@ Use graph queries before modifying important plans or when deciding which plan i
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph mainline --repo-root "$(pwd)"
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph lineage <plan_id> --repo-root "$(pwd)"
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph impact <plan_id> --repo-root "$(pwd)"
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph context <plan_id> --repo-root "$(pwd)"
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph conflicts --repo-root "$(pwd)"
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py graph body-links [plan_id] --repo-root "$(pwd)"
 python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py adopt-external-references --repo-root "$(pwd)"
@@ -220,6 +221,8 @@ python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py semantic --re
 Graph query output is JSON. It is intended for agent consumption, not prose scraping. Treat `registry-direct` and `manual-confirmed` relationships as stronger evidence than inferred or derived relationships.
 
 `graph mainline` includes `derivation`: `manual-pinned` when `mainline_mode=manual` and `mainline_doc_paths` are set, otherwise `auto-derived`. Auto-derived mainline output is a planning signal, not a human-confirmed single source of truth.
+
+`graph context <plan_id>` is a deterministic aggregation query. It combines the selected plan, same-workstream mainline view, lineage, impact, plan-specific deterministic conflicts, explicit body links, and a deduplicated `must_read` file list. It does not include semantic soft edges.
 
 `graph conflicts` reports deterministic hard conflicts from registry state only. In `strict_mainline` mode, multiple active `execution_plan` heads in the same workstream are a conflict even when none of them are marked authoritative, because a user or agent must pin, close, or supersede until one current head remains. It does not report semantic or embedding-inferred conflicts.
 
@@ -251,7 +254,7 @@ Outside-repo local Markdown links are reported as `external_reference` context i
 
 After adopting external references, run `graph body-links` again. Use `index` to build the local SQLite cache when persisted graph status, future MCP reads, or multi-agent read stability matter. Use `status` to check whether the cache exists and whether it is stale after registry or plan-document changes. Use `sync` to rebuild missing, stale, or old-schema indexes. Use `query` for SQLite-backed text search over indexed plan titles, paths, bodies, and notes.
 
-Use `mcp` only when a host wants a stdio MCP server. The MCP layer exposes read-only status, mainline, query, lineage, impact, conflicts, and body-link tools. It does not replace the CLI or registry.
+Use `mcp` only when a host wants a stdio MCP server. The MCP layer exposes read-only status, mainline, query, lineage, impact, context, conflicts, and body-link tools. It does not replace the CLI or registry.
 
 Use `semantic` only as an explicit advanced operation. It builds `semantic-inferred` soft edges in the local SQLite cache, never writes them to the registry, and never makes them fatal lint errors. Ordinary `query` output must stay deterministic text search and must not include `semantic_results` by default. `semantic` should prioritize high-confidence pairs that have no direct registry hard relation and are not in the same workstream, so it surfaces likely incremental context rather than repeating known hard edges.
 
@@ -314,7 +317,7 @@ This skill manages or generates:
 - `.plangraph.yml`
 - `.plangraph.ignore`
 - `.plangraph/plangraph.db`
-- JSON graph query output for mainline, lineage, impact, conflicts, and body-links
+- JSON graph query output for mainline, lineage, impact, context, conflicts, and body-links
 
 ## Common Mistakes
 

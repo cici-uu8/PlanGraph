@@ -1476,6 +1476,102 @@ class PlanGraph:
             'provenance': 'registry-derived',
         }
 
+    def context(self, plan_id: str) -> dict[str, Any]:
+        row = self.by_id.get(plan_id)
+        if not row:
+            return {'error': f'plan_id not found: {plan_id}', 'plan_id': plan_id, 'query': 'context'}
+
+        mainline = self.mainline(row.get('workstream') or None)
+        lineage = self.lineage(plan_id)
+        impact = self.impact(plan_id)
+        conflicts = self.conflicts()
+        body_links = self.body_links(plan_id)
+
+        relevant_conflicts = []
+        for item in conflicts.get('conflicts', []):
+            plan_ids = {plan.get('plan_id', '') for plan in item.get('plans', [])}
+            if plan_id in plan_ids:
+                relevant_conflicts.append(item)
+
+        must_read: dict[str, dict[str, Any]] = {}
+
+        def add_must_read(target_row: dict[str, str] | None, reason: str, provenance: str = 'registry-derived') -> None:
+            if not target_row:
+                return
+            doc_path = target_row.get('doc_path', '')
+            if not doc_path:
+                return
+            entry = must_read.setdefault(doc_path, {
+                'plan': row_summary(target_row),
+                'doc_path': doc_path,
+                'reasons': [],
+            })
+            if reason not in entry['reasons']:
+                entry['reasons'].append(reason)
+            entry['provenance'] = provenance
+
+        add_must_read(row, 'selected-plan')
+
+        parent_id = row.get('parent_plan', '').strip()
+        if parent_id:
+            add_must_read(self.by_id.get(parent_id), 'parent-plan')
+
+        for item in lineage.get('backward', []):
+            add_must_read(self.by_id.get(item.get('plan_id', '')), 'superseded-predecessor')
+        for item in lineage.get('forward', []):
+            add_must_read(self.by_id.get(item.get('plan_id', '')), 'superseding-successor')
+
+        for item in impact.get('impacted', []):
+            target = item.get('plan', {})
+            target_row = self.by_id.get(target.get('plan_id', ''))
+            if not target_row:
+                continue
+            for reason in item.get('reasons', []):
+                reason_text = str(reason.get('reason', '')).strip().replace(' ', '-')
+                add_must_read(target_row, reason_text, reason.get('provenance', 'registry-derived'))
+
+        for item in body_links.get('edges', []):
+            add_must_read(self.by_id.get(item.get('target', '')), 'body-linked-doc', item.get('provenance', 'body-link'))
+
+        mainline_heads = []
+        for head in mainline.get('heads', []):
+            head_row = self.by_id.get(head.get('plan_id', ''))
+            if head_row:
+                mainline_heads.append(row_summary(head_row))
+                if head.get('plan_id') != plan_id:
+                    add_must_read(head_row, 'current-mainline-head')
+
+        result = {
+            'query': 'context',
+            'plan': row_summary(row),
+            'mainline': {
+                'workstream': mainline.get('workstream', ''),
+                'execution_policy': mainline.get('execution_policy', ''),
+                'derivation': mainline.get('derivation', ''),
+                'heads': mainline_heads,
+                'notes': mainline.get('notes', ''),
+                'provenance': mainline.get('provenance', 'registry-derived'),
+            },
+            'lineage': lineage,
+            'impact': impact,
+            'conflicts': {
+                'query': 'conflicts',
+                'count': len(relevant_conflicts),
+                'conflicts': relevant_conflicts,
+                'provenance': 'registry-derived',
+            },
+            'body_links': body_links,
+            'must_read': sorted(must_read.values(), key=lambda item: (0 if 'selected-plan' in item['reasons'] else 1, item['doc_path'])),
+            'must_read_count': len(must_read),
+            'notes': [
+                'Context is deterministic and registry-driven.',
+                'It aggregates mainline, lineage, impact, conflicts, and explicit body-link evidence for one plan.',
+                'It does not include semantic soft edges.',
+            ],
+            'provenance': 'registry-derived',
+        }
+        return result
+
     def body_links(self, plan_id: str | None = None) -> dict[str, Any]:
         if self.repo_root is None:
             return {'error': 'repo_root required for body-link extraction', 'query': 'body-links'}
@@ -2543,6 +2639,18 @@ def mcp_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            'name': 'plangraph_context',
+            'description': 'Return deterministic related context for one plan by aggregating mainline, lineage, impact, conflicts, and body links.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'plan_id': {'type': 'string'},
+                },
+                'required': ['plan_id'],
+                'additionalProperties': False,
+            },
+        },
+        {
             'name': 'plangraph_conflicts',
             'description': 'Return deterministic registry-derived planning conflicts.',
             'inputSchema': {
@@ -2591,7 +2699,7 @@ def mcp_call_tool(repo_root: Path, cfg: dict[str, Any], name: str, arguments: di
         if not text:
             return mcp_result({'error': 'text is required', 'query': 'query'})
         return mcp_result(sqlite_query(repo_root, cfg, text))
-    if name in {'plangraph_lineage', 'plangraph_impact', 'plangraph_conflicts', 'plangraph_body_links'}:
+    if name in {'plangraph_lineage', 'plangraph_impact', 'plangraph_context', 'plangraph_conflicts', 'plangraph_body_links'}:
         graph = load_graph(repo_root, cfg)
         if graph is None:
             return mcp_result({'error': 'registry missing', 'query': name.removeprefix('plangraph_').replace('_', '-')})
@@ -2605,6 +2713,8 @@ def mcp_call_tool(repo_root: Path, cfg: dict[str, Any], name: str, arguments: di
             return mcp_result({'error': 'plan_id is required', 'query': name.removeprefix('plangraph_')})
         if name == 'plangraph_lineage':
             return mcp_result(graph.lineage(plan_id))
+        if name == 'plangraph_context':
+            return mcp_result(graph.context(plan_id))
         return mcp_result(graph.impact(plan_id))
     return mcp_result({'error': f'unknown tool: {name}'})
 
@@ -2659,7 +2769,7 @@ def run_mcp(repo_root: Path, cfg: dict[str, Any]) -> int:
 
 def run_graph(repo_root: Path, cfg: dict[str, Any], ids: list[str], workstream: str | None = None) -> int:
     if not ids:
-        print('ERROR: graph requires a query: mainline, lineage, impact, conflicts, or body-links')
+        print('ERROR: graph requires a query: mainline, lineage, impact, context, conflicts, or body-links')
         return 2
     query = ids[0]
     graph = load_graph(repo_root, cfg)
@@ -2677,6 +2787,11 @@ def run_graph(repo_root: Path, cfg: dict[str, Any], ids: list[str], workstream: 
             print('ERROR: graph impact requires exactly one plan_id')
             return 2
         result = graph.impact(ids[1])
+    elif query == 'context':
+        if len(ids) != 2:
+            print('ERROR: graph context requires exactly one plan_id')
+            return 2
+        result = graph.context(ids[1])
     elif query == 'conflicts':
         result = graph.conflicts()
     elif query == 'body-links':
