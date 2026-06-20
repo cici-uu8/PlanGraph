@@ -86,7 +86,7 @@ Use $plangraph to enable planning graph.
 
 PlanGraph currently focuses on the deterministic foundation:
 
-- brownfield adoption analysis
+- brownfield adoption analysis with scan-scope and out-of-scope Markdown disclosure
 - canonical plan registry
 - lifecycle states for active, deferred, superseded, closed, rejected, archived, and unknown docs
 - `supersedes` / `superseded_by` relationships
@@ -155,6 +155,7 @@ The screenshots below use a small synthetic brownfield repo. They are intentiona
 ### Read-only adoption report
 
 The adoption scan produces a readable report before the repo is governed. It helps a human decide which legacy files are current, historical, weak matches, or candidates for quarantine.
+It also reports how many Markdown files were inside the configured scan scope and how many were outside scope, so users can tell whether PlanGraph inspected the folders they expected.
 
 <p align="center">
   <img src="./assets/screenshot-adoption-report.png" alt="Plan adoption report screenshot" width="900" />

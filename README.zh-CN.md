@@ -86,7 +86,7 @@ npx skills add cici-uu8/PlanGraph
 
 PlanGraph 当前先聚焦确定性基础：
 
-- brownfield 接入分析
+- brownfield 接入分析，并明确展示扫描范围和范围外 Markdown 数量
 - canonical plan registry
 - active、deferred、superseded、closed、rejected、archived、unknown 等生命周期状态
 - `supersedes` / `superseded_by` 关系
@@ -155,6 +155,7 @@ agent 查询 PlanGraph，再决定当前事实来源。
 ### 只读接入分析报告
 
 adoption scan 会在正式启用前生成一份可读报告，帮助人判断哪些历史文件是当前计划、历史计划、弱匹配，或者需要隔离确认。
+它也会报告有多少 Markdown 位于当前扫描范围内、多少 Markdown 在范围外未被检查，避免用户误以为 PlanGraph 已经看过全仓所有文档。
 
 <p align="center">
   <img src="./assets/screenshot-adoption-report.png" alt="Plan adoption report screenshot" width="900" />

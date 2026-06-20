@@ -135,6 +135,17 @@ class PlanGraphTests(unittest.TestCase):
         self.assertIn('non-active-plan-has-execution-successor', conflict_types)
         self.assertTrue(all(item['provenance'] == 'registry-derived' for item in result['conflicts']))
 
+    def test_strict_mainline_conflicts_on_multiple_active_execution_heads_without_authority(self):
+        rows = plan_governance.parse_registry_rows(registry_text([
+            ['a', 'A', 'docs/a.md', 'execution_plan', 'core', 'active', 'not_started', 'false', 'manual', '1.00', '', '', '', '', '', ''],
+            ['b', 'B', 'docs/b.md', 'execution_plan', 'core', 'active', 'not_started', 'false', 'manual', '1.00', '', '', '', '', '', ''],
+        ]))
+
+        result = plan_governance.PlanGraph(rows, {'execution_policy': 'strict_mainline'}).conflicts()
+        conflict_types = {item['type'] for item in result['conflicts']}
+
+        self.assertIn('multiple-active-execution-heads-in-strict-mainline', conflict_types)
+
     def test_integrity_detects_cycle_and_orphan_parent(self):
         rows = plan_governance.parse_registry_rows(registry_text([
             ['a', 'A', 'docs/a.md', 'execution_plan', 'core', 'active', 'not_started', 'true', 'manual', '1.00', '', 'b', 'b', '', '', ''],

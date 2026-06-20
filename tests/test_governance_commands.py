@@ -188,6 +188,25 @@ class GovernanceCommandTests(unittest.TestCase):
             self.assertIn('docs/week1_plan.md', registered_paths)
             self.assertNotIn('.plangraph/cached_plan.md', registered_paths)
 
+    def test_init_report_discloses_out_of_scope_markdown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            archive = root / 'archive'
+            docs.mkdir()
+            archive.mkdir()
+            (docs / 'current_plan.md').write_text('# Current Plan\n\n- [ ] Ship the next step.\n', encoding='utf-8')
+            (archive / 'old_plan.md').write_text('# Old Plan\n\nHistorical execution plan.\n', encoding='utf-8')
+
+            run_cli(root, 'init')
+            report = (docs / 'plan_adoption_report.md').read_text(encoding='utf-8')
+
+            self.assertIn('Repository Markdown files found: 2', report)
+            self.assertIn('Markdown files inside configured scan scope: 1', report)
+            self.assertIn('1 Markdown file is outside configured scan scope and was not inspected', report)
+            self.assertIn('## Out-of-Scope Markdown Files', report)
+            self.assertIn('archive/old_plan.md', report)
+
     def test_index_status_does_not_track_missing_legacy_config_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

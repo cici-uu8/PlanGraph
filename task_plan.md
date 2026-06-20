@@ -23,6 +23,7 @@ Move the repository public surface into a standalone `plangraph` product context
 | 13. Continue v0.4 SQLite index | in progress | schema v4 supports stable status/sync/query plus semantic-edge cache as derived data |
 | 14. Continue v0.5 MCP server | in progress | `mcp` stdio server handles status/mainline/query plus lineage/impact/conflicts/body-links |
 | 15. Continue v0.6 semantic soft edges | in progress | `semantic` is explicit only; ordinary `query` excludes semantic results; soft edges must be registry-zero-relation and cross-workstream |
+| 16. Close deterministic-core dogfooding P0 fixes | complete | external-user trial on `/Users/cici/anomaly_detection` exposed scan-scope trust disclosure and `strict_mainline` multi-head conflict gaps; targeted tests cover both fixes |
 
 ## Acceptance Criteria
 
@@ -49,3 +50,4 @@ Move the repository public surface into a standalone `plangraph` product context
 - User decision on 2026-06-18 overrides the prior external-validation gate: proceed locally into SQLite / MCP / semantic layer without another repository validation pass, but keep registry as the source of truth and keep each stage separately testable.
 - Semantic soft edges have a local explicit first slice; ordinary `query` no longer includes `semantic_results`. The explicit `semantic` command now prioritizes high-confidence pairs with no direct registry hard relation and not in the same workstream.
 - Rationale recorded in `decisions/2026-06-18-thaw-v0.3-freeze.md`: the author deliberately thawed the local `v0.3` freeze to validate product-foundation layers. This was not an external reviewer request, and it does not change the public release boundary.
+- Dogfooding on `/Users/cici/anomaly_detection` added two deterministic-core guardrails before further product work: `init` adoption reports now disclose repository-wide Markdown count versus configured scan scope, and `strict_mainline` now treats multiple active execution heads in one workstream as a hard conflict even when `authoritative=false`.

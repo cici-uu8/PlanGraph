@@ -140,6 +140,8 @@ The report explains, in plain language:
 - which ones are strong candidates
 - which ones need human review
 - which files were skipped and why
+- how many Markdown files were inside the configured scan scope
+- how many Markdown files were outside scope and not inspected
 - what to do next
 
 ### 1. Enable PlanGraph
@@ -219,7 +221,7 @@ Graph query output is JSON. It is intended for agent consumption, not prose scra
 
 `graph mainline` includes `derivation`: `manual-pinned` when `mainline_mode=manual` and `mainline_doc_paths` are set, otherwise `auto-derived`. Auto-derived mainline output is a planning signal, not a human-confirmed single source of truth.
 
-`graph conflicts` reports deterministic hard conflicts from registry state only. It does not report semantic or embedding-inferred conflicts.
+`graph conflicts` reports deterministic hard conflicts from registry state only. In `strict_mainline` mode, multiple active `execution_plan` heads in the same workstream are a conflict even when none of them are marked authoritative, because a user or agent must pin, close, or supersede until one current head remains. It does not report semantic or embedding-inferred conflicts.
 
 `graph body-links` extracts explicit Markdown links from registered document bodies. It reports repo-local `body-link` edges, outside-repo `external_reference` items, and unresolved references, but it does not write inferred relationships back to the registry. External references include existence and trust metadata. They stay outside the current repo graph unless a future workflow explicitly adopts them; `external_reference_roots` only marks configured local roots as trusted context.
 

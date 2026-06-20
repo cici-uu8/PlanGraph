@@ -317,6 +317,33 @@ def should_ignore(rel_path: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(rel_path, p) for p in patterns)
 
 
+GLOBAL_MARKDOWN_EXCLUDE_DIRS = {'.git', 'node_modules', INDEX_DIR}
+
+
+def globally_excluded_markdown_path(path: Path, repo_root: Path) -> bool:
+    rel_parts = path.relative_to(repo_root).parts
+    return any(part in GLOBAL_MARKDOWN_EXCLUDE_DIRS for part in rel_parts)
+
+
+def discover_repo_markdown_files(repo_root: Path) -> list[str]:
+    found = [
+        path.relative_to(repo_root).as_posix()
+        for path in repo_root.rglob('*.md')
+        if path.is_file() and not globally_excluded_markdown_path(path, repo_root)
+    ]
+    return sorted(found)
+
+
+def discover_included_markdown_files(repo_root: Path, cfg: dict[str, Any]) -> list[str]:
+    include_globs = cfg.get('scan', {}).get('include_globs', ['*.md', 'docs/**/*.md'])
+    found: set[str] = set()
+    for pattern in include_globs:
+        for path in repo_root.glob(pattern):
+            if path.is_file() and not globally_excluded_markdown_path(path, repo_root):
+                found.add(path.relative_to(repo_root).as_posix())
+    return sorted(found)
+
+
 def discover_candidates(repo_root: Path, cfg: dict[str, Any]) -> list[Candidate]:
     include_globs = cfg.get('scan', {}).get('include_globs', ['*.md', 'docs/**/*.md'])
     exclude_globs = list(cfg.get('scan', {}).get('exclude_globs', []) or [])
@@ -964,12 +991,21 @@ def plan_id_for(candidate: Candidate) -> str:
     return f'{stem[:24]}-{digest}'
 
 
-def classify_for_init(repo_root: Path, cfg: dict[str, Any]) -> tuple[list[Candidate], list[str]]:
+def classify_for_init(repo_root: Path, cfg: dict[str, Any]) -> tuple[list[Candidate], list[str], dict[str, Any]]:
+    repo_markdown = discover_repo_markdown_files(repo_root)
+    included_markdown = discover_included_markdown_files(repo_root, cfg)
     all_markdown = discover_markdown_files(repo_root, cfg)
     discovered = {candidate.rel_path for candidate in discover_candidates(repo_root, cfg)}
-    ignored = [path for path in all_markdown if path not in discovered and Path(path).name not in DERIVED_DOC_NAMES]
+    ignored = [path for path in included_markdown if path not in discovered]
+    out_of_scope = [path for path in repo_markdown if path not in set(included_markdown)]
     classified = [classify_candidate(c, cfg) for c in discover_candidates(repo_root, cfg)]
-    return classified, ignored
+    scan_summary = {
+        'repo_markdown_count': len(repo_markdown),
+        'included_markdown_count': len(included_markdown),
+        'scanned_markdown_count': len(all_markdown),
+        'out_of_scope': out_of_scope,
+    }
+    return classified, ignored, scan_summary
 
 
 def role_label(role: str) -> str:
@@ -1035,12 +1071,23 @@ def render_conflict_section(candidates: list[Candidate], high_threshold: float) 
     return lines
 
 
-def write_adoption_report(repo_root: Path, cfg: dict[str, Any], classified: list[Candidate], ignored: list[str]) -> Path:
+def markdown_file_sentence(count: int) -> str:
+    return f'{count} Markdown file' if count == 1 else f'{count} Markdown files'
+
+
+def write_adoption_report(
+    repo_root: Path,
+    cfg: dict[str, Any],
+    classified: list[Candidate],
+    ignored: list[str],
+    scan_summary: dict[str, Any],
+) -> Path:
     high_threshold = cfg.get('classification', {}).get('high_confidence_threshold', 0.85)
     quarantine_threshold = cfg.get('classification', {}).get('quarantine_threshold', 0.55)
     high = [c for c in classified if c.confidence >= high_threshold]
     medium = [c for c in classified if quarantine_threshold <= c.confidence < high_threshold]
     low = [c for c in classified if c.confidence < quarantine_threshold]
+    out_of_scope = list(scan_summary.get('out_of_scope', []))
     report_path = repo_root / cfg.get('adoption_report_path', DEFAULT_ADOPTION_REPORT_PATH)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = [
@@ -1052,17 +1099,21 @@ def write_adoption_report(repo_root: Path, cfg: dict[str, Any], classified: list
         '',
         '## Quick Answer',
         '',
-        f'- Found {len(classified)} possible plan-related Markdown files.',
+        f'- Repository Markdown files found: {scan_summary.get("repo_markdown_count", len(classified))}.',
+        f'- Markdown files inside configured scan scope: {scan_summary.get("included_markdown_count", len(classified))}.',
+        f'- Found {len(classified)} possible plan-related Markdown files inside scan scope.',
         f'- {len(high)} look strong enough to auto-register after you review them.',
         f'- {len(medium)} need human confirmation before entering the registry.',
         f'- {len(low)} were weak matches and should usually stay out unless you know they matter.',
-        f'- {len(ignored)} Markdown files were skipped before classification because of scan filters, ignore rules, or derived-document rules.',
+        f'- {markdown_file_sentence(len(ignored))} inside scan scope were skipped before classification because of scanner filters, ignore rules, or derived-document rules.',
+        f'- {markdown_file_sentence(len(out_of_scope))} {"is" if len(out_of_scope) == 1 else "are"} outside configured scan scope and {"was" if len(out_of_scope) == 1 else "were"} not inspected.',
         '',
         '## How To Read This Report',
         '',
         '- "Likely auto-register" means: this file looks enough like a plan that `bootstrap` would probably add it to the registry.',
         '- "Quarantine" means: this file might matter, but a person should check it first.',
         '- "Weak match" means: the file only showed a few planning signals and usually should stay outside governance.',
+        '- "Outside scan scope" means: the file did not match `scan.include_globs`; it was not classified at all.',
         '- Confidence is only a hint, not a decision. A high score does not prove that a file is current.',
         '',
         '## What This Means',
@@ -1108,7 +1159,20 @@ def write_adoption_report(repo_root: Path, cfg: dict[str, Any], classified: list
             lines.append(f'- ... {len(ignored) - 100} more skipped files omitted')
         lines.append('')
     else:
-        lines.extend(['No Markdown files were skipped by the scanner.', ''])
+        lines.extend(['No in-scope Markdown files were skipped by scanner filters.', ''])
+    lines.extend([
+        '## Out-of-Scope Markdown Files',
+        '',
+        'These files did not match `scan.include_globs` and were not inspected. Extend `.plangraph.yml` only if they should participate in planning governance.',
+        '',
+    ])
+    if out_of_scope:
+        lines.extend([f'- `{path}`' for path in out_of_scope[:100]])
+        if len(out_of_scope) > 100:
+            lines.append(f'- ... {len(out_of_scope) - 100} more out-of-scope files omitted')
+        lines.append('')
+    else:
+        lines.extend(['No Markdown files were outside the configured scan scope.', ''])
     lines.extend([
         '## Suggested Configuration',
         '',
@@ -1131,8 +1195,8 @@ def write_adoption_report(repo_root: Path, cfg: dict[str, Any], classified: list
 
 def run_init(repo_root: Path) -> None:
     cfg = load_effective_config(repo_root)
-    classified, ignored = classify_for_init(repo_root, cfg)
-    report_path = write_adoption_report(repo_root, cfg, classified, ignored)
+    classified, ignored, scan_summary = classify_for_init(repo_root, cfg)
+    report_path = write_adoption_report(repo_root, cfg, classified, ignored, scan_summary)
     print(f'init complete: wrote read-only adoption report to {report_path.relative_to(repo_root).as_posix()}')
     print('No registry, quarantine, or project config files were created or modified.')
     print('Next step: read the report, decide which files are current, and run bootstrap only after you agree with the scan.')
@@ -1549,6 +1613,23 @@ class PlanGraph:
                     f'multiple active authoritative execution heads in workstream {workstream}',
                     rows,
                 )
+
+        if infer_execution_policy(self.rows, self.cfg) == 'strict_mainline':
+            active_execution_heads: dict[str, list[dict[str, str]]] = {}
+            for row in self.rows:
+                if (
+                    row.get('doc_role') == 'execution_plan'
+                    and row.get('lifecycle_status') == 'active'
+                    and not csv_ids(row.get('superseded_by', ''))
+                ):
+                    active_execution_heads.setdefault(row.get('workstream', '') or 'general', []).append(row)
+            for workstream, rows in sorted(active_execution_heads.items()):
+                if len(rows) > 1:
+                    add_conflict(
+                        'multiple-active-execution-heads-in-strict-mainline',
+                        f'strict_mainline has multiple active execution heads in workstream {workstream}; pin or close/supersede until one current head remains',
+                        rows,
+                    )
 
         non_active_parent_statuses = {'closed', 'superseded', 'rejected', 'archived', 'deferred'}
         for row in self.rows:
