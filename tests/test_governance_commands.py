@@ -1,3 +1,5 @@
+import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -5,10 +7,17 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / 'scripts' / 'plan_governance.py'
+SCRIPT_SPEC = importlib.util.spec_from_file_location('plan_governance_module', SCRIPT_PATH)
+assert SCRIPT_SPEC is not None and SCRIPT_SPEC.loader is not None
+PLAN_GOV = importlib.util.module_from_spec(SCRIPT_SPEC)
+sys.modules[SCRIPT_SPEC.name] = PLAN_GOV
+SCRIPT_SPEC.loader.exec_module(PLAN_GOV)
 
 
 def run_cli(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -30,6 +39,17 @@ def run_mcp_session(root: Path, *messages: dict[str, object]) -> list[dict[str, 
         text=True,
     )
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+
+
+def completed_process(args: list[str], returncode: int = 0, stdout: str = '', stderr: str = '') -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=args, returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def capture_json_call(func, *args):
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        code = func(*args)
+    return code, json.loads(buffer.getvalue())
 
 
 def init_git_repo(root: Path) -> None:
@@ -344,6 +364,8 @@ class GovernanceCommandTests(unittest.TestCase):
             )
 
             self.assertEqual(messages[0]['result']['serverInfo']['name'], 'plangraph')
+            self.assertEqual(Path(messages[0]['result']['meta']['workspace_root']), root.resolve())
+            self.assertEqual(messages[0]['result']['meta']['discovery_source'], 'fallback.repo_root')
             tool_names = {item['name'] for item in messages[1]['result']['tools']}
             self.assertIn('plangraph_status', tool_names)
             self.assertIn('plangraph_mainline', tool_names)
@@ -402,6 +424,132 @@ class GovernanceCommandTests(unittest.TestCase):
             self.assertEqual(payload['plan']['plan_id'], week1_id)
             self.assertEqual(payload['body_links']['edge_count'], 1)
             self.assertGreaterEqual(payload['must_read_count'], 2)
+
+    def test_mcp_initialize_prefers_root_uri_workspace_discovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            root = workspace / 'repo'
+            docs = root / 'docs'
+            docs.mkdir(parents=True)
+            write_minimal_repo_config(root)
+            run_cli(root, 'bootstrap', '--skip-install-agents-block')
+            run_cli(root, 'index')
+
+            messages = run_mcp_session(
+                workspace,
+                {
+                    'jsonrpc': '2.0',
+                    'id': 1,
+                    'method': 'initialize',
+                    'params': {'rootUri': root.as_uri()},
+                },
+            )
+
+            self.assertEqual(Path(messages[0]['result']['meta']['workspace_root']), root.resolve())
+            self.assertEqual(messages[0]['result']['meta']['discovery_source'], 'initialize.rootUri')
+            self.assertTrue(messages[0]['result']['meta']['index_exists'])
+
+    def test_install_reports_already_configured_codex_mcp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script_path = SCRIPT_PATH.resolve()
+            expected = {
+                'name': 'plangraph',
+                'transport': {
+                    'type': 'stdio',
+                    'command': sys.executable,
+                    'args': [str(script_path), 'mcp'],
+                    'env': {},
+                },
+            }
+
+            def fake_run(cmd: list[str], check: bool = False, capture_output: bool = False, text: bool = False, **kwargs: object):
+                if cmd[:4] == ['codex', 'mcp', 'get', 'plangraph']:
+                    return completed_process(cmd, stdout=json.dumps(expected))
+                raise AssertionError(f'unexpected command: {cmd}')
+
+            with patch('subprocess.run', side_effect=fake_run):
+                code, data = capture_json_call(PLAN_GOV.install_mcp_server, root, script_path)
+
+            self.assertEqual(code, 0)
+            self.assertEqual(data['query'], 'install')
+            self.assertFalse(data['changed'])
+            self.assertEqual(data['status'], 'already-configured')
+
+    def test_install_replaces_existing_codex_mcp_and_adds_expected_transport(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            expected_add = [
+                'codex',
+                'mcp',
+                'add',
+                'plangraph',
+                '--',
+                sys.executable,
+                str(SCRIPT_PATH.resolve()),
+                'mcp',
+            ]
+            calls: list[list[str]] = []
+
+            def fake_run(cmd: list[str], check: bool = False, capture_output: bool = False, text: bool = False, **kwargs: object):
+                calls.append(cmd)
+                if cmd[:4] == ['codex', 'mcp', 'get', 'plangraph']:
+                    return completed_process(
+                        cmd,
+                        stdout=json.dumps({
+                            'name': 'plangraph',
+                            'transport': {
+                                'type': 'stdio',
+                                'command': 'python3',
+                                'args': ['old.py', 'mcp'],
+                                'env': {'PLANGRAPH_REPO_ROOT': '/tmp/elsewhere'},
+                            },
+                        }),
+                    )
+                if cmd[:4] == ['codex', 'mcp', 'remove', 'plangraph']:
+                    return completed_process(cmd)
+                if cmd == expected_add:
+                    return completed_process(cmd)
+                raise AssertionError(f'unexpected command: {cmd}')
+
+            with patch('subprocess.run', side_effect=fake_run):
+                code, data = capture_json_call(PLAN_GOV.install_mcp_server, root, SCRIPT_PATH.resolve())
+
+            self.assertEqual(code, 0)
+            self.assertEqual(data['status'], 'installed')
+            self.assertTrue(data['changed'])
+            self.assertIn(expected_add, calls)
+
+    def test_uninstall_reports_not_installed(self):
+        def fake_run(cmd: list[str], check: bool = False, capture_output: bool = False, text: bool = False, **kwargs: object):
+            if cmd[:4] == ['codex', 'mcp', 'get', 'plangraph']:
+                return completed_process(cmd, returncode=1, stderr="Error: No MCP server named 'plangraph' found.")
+            raise AssertionError(f'unexpected command: {cmd}')
+
+        with patch('subprocess.run', side_effect=fake_run):
+            code, data = capture_json_call(PLAN_GOV.uninstall_mcp_server)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(data['query'], 'uninstall')
+        self.assertFalse(data['changed'])
+        self.assertEqual(data['status'], 'not-installed')
+
+    def test_discover_mcp_reports_expected_transport(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def fake_run(cmd: list[str], check: bool = False, capture_output: bool = False, text: bool = False, **kwargs: object):
+                if cmd[:4] == ['codex', 'mcp', 'get', 'plangraph']:
+                    return completed_process(cmd, returncode=1, stderr="Error: No MCP server named 'plangraph' found.")
+                raise AssertionError(f'unexpected command: {cmd}')
+
+            with patch('subprocess.run', side_effect=fake_run):
+                code, data = capture_json_call(PLAN_GOV.describe_mcp_installation, root, SCRIPT_PATH.resolve())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(data['query'], 'mcp-discover')
+        self.assertFalse(data['configured'])
+        self.assertEqual(data['expected_transport']['command'], sys.executable)
 
     def test_semantic_edges_are_explicit_soft_hints(self):
         with tempfile.TemporaryDirectory() as tmp:

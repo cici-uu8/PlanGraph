@@ -256,6 +256,16 @@ After adopting external references, run `graph body-links` again. Use `index` to
 
 Use `mcp` only when a host wants a stdio MCP server. The MCP layer exposes read-only status, mainline, query, lineage, impact, context, conflicts, and body-link tools. It does not replace the CLI or registry.
 
+For Codex, PlanGraph now has a narrow first-host install path:
+
+```bash
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py install --repo-root "$(pwd)"
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py discover-mcp --repo-root "$(pwd)"
+python3 ~/.codex/skills/plan-governance/scripts/plan_governance.py uninstall
+```
+
+This install path is intentionally global-to-Codex rather than per-repo static config. The server should discover the active workspace from MCP `rootUri` / `workspaceFolders`; `PLANGRAPH_REPO_ROOT` remains only as an override when a host cannot send workspace metadata.
+
 Use `semantic` only as an explicit advanced operation. It builds `semantic-inferred` soft edges in the local SQLite cache, never writes them to the registry, and never makes them fatal lint errors. Ordinary `query` output must stay deterministic text search and must not include `semantic_results` by default. `semantic` should prioritize high-confidence pairs that have no direct registry hard relation and are not in the same workstream, so it surfaces likely incremental context rather than repeating known hard edges.
 
 ### 5. Close or supersede a plan

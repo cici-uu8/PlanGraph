@@ -11,10 +11,12 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 try:
     import yaml
@@ -35,6 +37,15 @@ INDEX_DIR = '.plangraph'
 INDEX_DB_PATH = '.plangraph/plangraph.db'
 INDEX_SCHEMA_VERSION = 4
 MCP_PROTOCOL_VERSION = '2025-11-25'
+DEFAULT_MCP_SERVER_NAME = 'plangraph'
+MCP_DISCOVERY_OVERRIDE_ENV_VARS = [
+    'PLANGRAPH_REPO_ROOT',
+    'CODEX_PROJECT_ROOT',
+    'CODEX_WORKSPACE_ROOT',
+]
+MCP_DISCOVERY_WEAK_ENV_VARS = [
+    'PWD',
+]
 LEGACY_CONFIG_PATH = '.plan-governance.yml'
 LEGACY_IGNORE_PATH = '.plan-governance.ignore'
 AGENTS_BLOCK_START = '<!-- PLANGRAPH START -->'
@@ -222,6 +233,71 @@ def parse_simple_yaml_scalar(value: str) -> Any:
             return float(value)
         except ValueError:
             return value
+
+
+def file_uri_to_path(value: str) -> Path | None:
+    if not value.startswith('file://'):
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme != 'file':
+        return None
+    path = unquote(parsed.path or '')
+    if not path:
+        return None
+    return Path(path)
+
+
+def candidate_workspace_path(value: Any) -> Path | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    path = file_uri_to_path(text)
+    if path is not None:
+        return path
+    return Path(os.path.expanduser(text))
+
+
+def discover_repo_root(candidate: Path) -> tuple[Path, str]:
+    workspace_root = candidate.expanduser().resolve()
+    current = workspace_root if workspace_root.is_dir() else workspace_root.parent
+    for probe in [current, *current.parents]:
+        if (probe / CONFIG_PATH).exists():
+            return probe, CONFIG_PATH
+        if (probe / LEGACY_CONFIG_PATH).exists():
+            return probe, LEGACY_CONFIG_PATH
+        if (probe / 'docs' / 'plan_registry.md').exists():
+            return probe, 'docs/plan_registry.md'
+    return current, 'workspace-root'
+
+
+def resolve_mcp_repo_root(params: dict[str, Any] | None, fallback_repo_root: Path) -> tuple[Path, str, str]:
+    params = params or {}
+    candidates: list[tuple[str, Path | None]] = []
+    for key in ['rootUri', 'root_uri', 'repoRoot', 'repo_root', 'workspaceRoot', 'workspace_root', 'cwd']:
+        candidates.append((f'initialize.{key}', candidate_workspace_path(params.get(key))))
+    for key in ['workspaceFolders', 'workspace_folders']:
+        value = params.get(key)
+        if not isinstance(value, list):
+            continue
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                continue
+            candidates.append((f'initialize.{key}[{index}].uri', candidate_workspace_path(item.get('uri'))))
+            candidates.append((f'initialize.{key}[{index}].path', candidate_workspace_path(item.get('path'))))
+    for env_key in MCP_DISCOVERY_OVERRIDE_ENV_VARS:
+        candidates.append((f'env.{env_key}', candidate_workspace_path(os.environ.get(env_key))))
+    candidates.append(('fallback.repo_root', fallback_repo_root))
+    for env_key in MCP_DISCOVERY_WEAK_ENV_VARS:
+        candidates.append((f'env.{env_key}', candidate_workspace_path(os.environ.get(env_key))))
+    for source, path in candidates:
+        if path is None:
+            continue
+        repo_root, marker = discover_repo_root(path)
+        return repo_root, source, marker
+    repo_root, marker = discover_repo_root(fallback_repo_root)
+    return repo_root, 'fallback.repo_root', marker
 
 
 def dump_simple_yaml(data: Any, indent: int = 0) -> str:
@@ -2719,6 +2795,31 @@ def mcp_call_tool(repo_root: Path, cfg: dict[str, Any], name: str, arguments: di
     return mcp_result({'error': f'unknown tool: {name}'})
 
 
+def mcp_initialize_result(repo_root: Path, cfg: dict[str, Any], params: dict[str, Any] | None) -> dict[str, Any]:
+    active_repo_root, discovery_source, discovery_marker = resolve_mcp_repo_root(params, repo_root)
+    active_cfg = load_effective_config(active_repo_root)
+    status = sqlite_status(active_repo_root, active_cfg)
+    return {
+        'protocolVersion': MCP_PROTOCOL_VERSION,
+        'serverInfo': {'name': 'plangraph', 'version': str(cfg.get('version', '1'))},
+        'capabilities': {
+            'tools': {'listChanged': False},
+        },
+        'instructions': (
+            'PlanGraph auto-discovered the workspace root. '
+            'Pass rootUri/workspaceFolders during initialize or set PLANGRAPH_REPO_ROOT to override it.'
+        ),
+        'meta': {
+            'workspace_root': str(active_repo_root),
+            'discovery_source': discovery_source,
+            'discovery_marker': discovery_marker,
+            'registry_present': status['registry_row_count'] > 0 or 'registry missing' not in status.get('errors', []),
+            'index_exists': bool(status.get('exists')),
+            'index_stale': bool(status.get('stale')),
+        },
+    }
+
+
 def mcp_handle_request(repo_root: Path, cfg: dict[str, Any], request: dict[str, Any]) -> dict[str, Any] | None:
     if request.get('jsonrpc') != '2.0':
         return {'jsonrpc': '2.0', 'id': request.get('id'), 'error': {'code': -32600, 'message': 'Invalid Request'}}
@@ -2726,17 +2827,7 @@ def mcp_handle_request(repo_root: Path, cfg: dict[str, Any], request: dict[str, 
     request_id = request.get('id')
     params = request.get('params') or {}
     if method == 'initialize':
-        return {
-            'jsonrpc': '2.0',
-            'id': request_id,
-            'result': {
-                'protocolVersion': MCP_PROTOCOL_VERSION,
-                'serverInfo': {'name': 'plangraph', 'version': str(cfg.get('version', '1'))},
-                'capabilities': {
-                    'tools': {'listChanged': False},
-                },
-            },
-        }
+        return {'jsonrpc': '2.0', 'id': request_id, 'result': mcp_initialize_result(repo_root, cfg, params)}
     if method == 'tools/list':
         return {'jsonrpc': '2.0', 'id': request_id, 'result': {'tools': mcp_tools()}}
     if method == 'tools/call':
@@ -2748,8 +2839,8 @@ def mcp_handle_request(repo_root: Path, cfg: dict[str, Any], request: dict[str, 
 
 
 def run_mcp(repo_root: Path, cfg: dict[str, Any]) -> int:
-    import sys
-
+    active_repo_root = repo_root
+    active_cfg = cfg
     for line in sys.stdin:
         raw = line.strip()
         if not raw:
@@ -2759,7 +2850,10 @@ def run_mcp(repo_root: Path, cfg: dict[str, Any]) -> int:
         except json.JSONDecodeError:
             response = {'jsonrpc': '2.0', 'id': None, 'error': {'code': -32700, 'message': 'Parse error'}}
         else:
-            response = mcp_handle_request(repo_root, cfg, request)
+            if request.get('jsonrpc') == '2.0' and request.get('method') == 'initialize':
+                active_repo_root, _, _ = resolve_mcp_repo_root(request.get('params') or {}, repo_root)
+                active_cfg = load_effective_config(active_repo_root)
+            response = mcp_handle_request(active_repo_root, active_cfg, request)
         if response is None:
             continue
         sys.stdout.write(json.dumps(response, ensure_ascii=False) + '\n')
@@ -3564,9 +3658,205 @@ def run_refresh(repo_root: Path) -> None:
     print(f'refresh complete: mode={update_mode} auto_candidates={len(auto_entries)} quarantined={len(quarantined)}')
 
 
+def codex_mcp_get(name: str) -> dict[str, Any] | None:
+    result = subprocess.run(
+        ['codex', 'mcp', 'get', name, '--json'],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def plangraph_mcp_command(script_path: Path) -> list[str]:
+    return [sys.executable, str(script_path), 'mcp']
+
+
+def expected_plangraph_mcp_transport(script_path: Path) -> dict[str, Any]:
+    return {
+        'type': 'stdio',
+        'command': sys.executable,
+        'args': [str(script_path), 'mcp'],
+        'env': {},
+    }
+
+
+def normalize_transport(transport: dict[str, Any] | None) -> dict[str, Any]:
+    transport = transport or {}
+    return {
+        'type': transport.get('type'),
+        'command': transport.get('command'),
+        'args': list(transport.get('args') or []),
+        'env': dict(transport.get('env') or {}),
+    }
+
+
+def install_mcp_server(repo_root: Path, script_path: Path, name: str = DEFAULT_MCP_SERVER_NAME) -> int:
+    expected = expected_plangraph_mcp_transport(script_path)
+    existing = codex_mcp_get(name)
+    if existing is not None and normalize_transport(existing.get('transport')) == expected:
+        result = {
+            'query': 'install',
+            'host': 'codex',
+            'server_name': name,
+            'changed': False,
+            'status': 'already-configured',
+            'transport': expected,
+            'workspace_root': str(repo_root),
+            'discovery': {
+                'mode': 'initialize-rootUri-with-optional-env-override',
+                'override_env_vars': MCP_DISCOVERY_OVERRIDE_ENV_VARS,
+            },
+            'restart_required': True,
+            'notes': [
+                'Codex MCP server already matches the expected PlanGraph stdio configuration.',
+                'Repo discovery comes from initialize rootUri/workspaceFolders when the host provides them.',
+                'Restart Codex if the MCP tool list does not refresh automatically.',
+            ],
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if existing is not None:
+        remove = subprocess.run(
+            ['codex', 'mcp', 'remove', name],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if remove.returncode != 0:
+            result = {
+                'query': 'install',
+                'host': 'codex',
+                'server_name': name,
+                'changed': False,
+                'status': 'remove-failed',
+                'error': remove.stderr.strip() or remove.stdout.strip() or f'failed to remove existing MCP server: {name}',
+            }
+            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+            return 1
+
+    add_cmd = ['codex', 'mcp', 'add', name, '--', *plangraph_mcp_command(script_path)]
+    added = subprocess.run(
+        add_cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if added.returncode != 0:
+        result = {
+            'query': 'install',
+            'host': 'codex',
+            'server_name': name,
+            'changed': False,
+            'status': 'add-failed',
+            'error': added.stderr.strip() or added.stdout.strip() or 'failed to add Codex MCP server',
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 1
+
+    result = {
+        'query': 'install',
+        'host': 'codex',
+        'server_name': name,
+        'changed': True,
+        'status': 'installed',
+        'transport': expected,
+        'workspace_root': str(repo_root),
+        'discovery': {
+            'mode': 'initialize-rootUri-with-optional-env-override',
+            'override_env_vars': MCP_DISCOVERY_OVERRIDE_ENV_VARS,
+        },
+        'restart_required': True,
+        'notes': [
+            'Codex MCP entry now launches the local PlanGraph stdio server.',
+            'The server discovers the active repo from initialize rootUri/workspaceFolders instead of a per-repo static MCP entry.',
+            'Restart Codex so the new MCP tools become available in interactive sessions.',
+        ],
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
+def uninstall_mcp_server(name: str = DEFAULT_MCP_SERVER_NAME) -> int:
+    existing = codex_mcp_get(name)
+    if existing is None:
+        result = {
+            'query': 'uninstall',
+            'host': 'codex',
+            'server_name': name,
+            'changed': False,
+            'status': 'not-installed',
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    removed = subprocess.run(
+        ['codex', 'mcp', 'remove', name],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if removed.returncode != 0:
+        result = {
+            'query': 'uninstall',
+            'host': 'codex',
+            'server_name': name,
+            'changed': False,
+            'status': 'remove-failed',
+            'error': removed.stderr.strip() or removed.stdout.strip() or 'failed to remove Codex MCP server',
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 1
+    result = {
+        'query': 'uninstall',
+        'host': 'codex',
+        'server_name': name,
+        'changed': True,
+        'status': 'removed',
+        'restart_required': True,
+        'notes': [
+            'Removed the Codex MCP entry for PlanGraph.',
+            'Restart Codex if the old MCP tools still appear in the current session.',
+        ],
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
+def describe_mcp_installation(repo_root: Path, script_path: Path, name: str = DEFAULT_MCP_SERVER_NAME) -> int:
+    expected = expected_plangraph_mcp_transport(script_path)
+    existing = codex_mcp_get(name)
+    result = {
+        'query': 'mcp-discover',
+        'host': 'codex',
+        'server_name': name,
+        'workspace_root': str(repo_root),
+        'expected_transport': expected,
+        'configured': existing is not None,
+        'matches_expected': False,
+        'configured_transport': None,
+        'discovery': {
+            'mode': 'initialize-rootUri-with-optional-env-override',
+            'override_env_vars': MCP_DISCOVERY_OVERRIDE_ENV_VARS,
+        },
+    }
+    if existing is not None:
+        configured_transport = normalize_transport(existing.get('transport'))
+        result['configured_transport'] = configured_transport
+        result['matches_expected'] = configured_transport == expected
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['init', 'bootstrap', 'refresh', 'register', 'graph', 'index', 'status', 'sync', 'query', 'semantic', 'mcp', 'lint', 'report', 'adopt-external-references', 'install-agents-block', 'remove-agents-block', 'close', 'supersede'])
+    parser.add_argument('command', choices=['init', 'bootstrap', 'refresh', 'register', 'graph', 'index', 'status', 'sync', 'query', 'semantic', 'mcp', 'install', 'uninstall', 'discover-mcp', 'lint', 'report', 'adopt-external-references', 'install-agents-block', 'remove-agents-block', 'close', 'supersede'])
     parser.add_argument('ids', nargs='*')
     parser.add_argument('--repo-root', default=os.getcwd())
     parser.add_argument('--lifecycle-status', default='closed')
@@ -3618,6 +3908,12 @@ def main() -> int:
     if args.command == 'mcp':
         cfg = load_effective_config(repo_root)
         return run_mcp(repo_root, cfg)
+    if args.command == 'install':
+        return install_mcp_server(repo_root, Path(__file__).resolve())
+    if args.command == 'uninstall':
+        return uninstall_mcp_server()
+    if args.command == 'discover-mcp':
+        return describe_mcp_installation(repo_root, Path(__file__).resolve())
 
     cfg = ensure_repo_files(repo_root)
 

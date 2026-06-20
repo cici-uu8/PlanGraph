@@ -96,7 +96,7 @@ PlanGraph currently focuses on the deterministic foundation:
 - in-memory graph queries for mainline, lineage, impact, deterministic context, deterministic conflicts, explicit Markdown body links, and outside-repo external references
 - dry-run/apply adoption for useful external Markdown references
 - local SQLite indexing for status, sync, FTS query, and stable read caches
-- a read-only stdio MCP server for status, mainline, query, lineage, impact, context, conflicts, and body-links
+- a read-only stdio MCP server for status, mainline, query, lineage, impact, context, conflicts, and body-links, plus Codex install/uninstall and workspace-root discovery
 - explicit semantic soft-edge extraction for high-confidence cross-workstream, registry-zero-relation overlaps
 
 SQLite, MCP, and semantic edges are derived layers. The registry remains the source of truth; ordinary `query` stays deterministic text search, and semantic results are exposed only through the explicit `semantic` command.
@@ -178,6 +178,35 @@ The timeline report is derived from the registry, so humans and agents can quick
 </p>
 
 Sample Markdown outputs and a GitHub Actions lint template are available in [`examples/`](./examples/).
+
+## MCP In Codex
+
+PlanGraph now has a narrow first-host MCP path for Codex.
+
+Install the local stdio server into Codex:
+
+```bash
+python3 scripts/plan_governance.py install --repo-root "$(pwd)"
+```
+
+Check what Codex will use:
+
+```bash
+python3 scripts/plan_governance.py discover-mcp --repo-root "$(pwd)"
+```
+
+Remove the Codex MCP entry:
+
+```bash
+python3 scripts/plan_governance.py uninstall
+```
+
+This install path is intentionally host-scoped:
+
+- it configures one global `plangraph` MCP entry in Codex instead of one static server per repo
+- the server discovers the active repo from MCP `rootUri` / `workspaceFolders`
+- `PLANGRAPH_REPO_ROOT` remains available as a manual override for hosts or scripts that cannot send workspace metadata
+- restart Codex after install or uninstall so the MCP tool list refreshes
 
 ## Boundaries And Exit
 
