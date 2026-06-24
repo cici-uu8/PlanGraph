@@ -101,6 +101,8 @@ PlanGraph currently focuses on the deterministic foundation:
 
 SQLite, MCP, and semantic edges are derived layers. The registry remains the source of truth; ordinary `query` stays deterministic text search, and semantic results are exposed only through the explicit `semantic` command.
 
+SQLite query now keeps the fast FTS path for ordinary English phrase search, but it falls back to SQLite `LIKE '%term%'` matching when FTS returns zero rows. This is mainly for short CJK terms and substring-style lookups, so a Chinese user does not read "no result" as "document does not exist."
+
 ## Release Surface
 
 The supported public surface is the deterministic PlanGraph workflow: adoption scan, bootstrap, registry maintenance, lifecycle lint, and graph queries for mainline, lineage, impact, context, conflicts, body links, and external references.

@@ -20,7 +20,7 @@ Move the repository public surface into a standalone `plangraph` product context
 | 10. Add read-only body-link graph extraction | complete | `graph body-links [plan_id]` returns `body-link` edges, external references, and unresolved refs without registry writes |
 | 11. Record Phase 4 Stop/Go and classify external references | complete | real validation stopped SQLite; outside-repo links are structured `external_reference` context |
 | 12. Add external-reference adoption workflow | complete | dry-run/apply command localized useful external Markdown refs in a real repo; post-apply graph had edge=9, unresolved=0, external=4 |
-| 13. Continue v0.4 SQLite index | in progress | schema v4 supports stable status/sync/query plus semantic-edge cache as derived data |
+| 13. Continue v0.4 SQLite index | in progress | schema v5 supports stable status/sync/query, short-CJK LIKE fallback, and semantic-edge cache as derived data |
 | 14. Continue v0.5 MCP server | complete | `mcp` stdio server plus Codex install/uninstall/discovery, workspace-root-aware initialize, and regression tests |
 | 15. Continue v0.6 semantic soft edges | in progress | `semantic` is explicit only; ordinary `query` excludes semantic results; soft edges must be registry-zero-relation and cross-workstream |
 | 16. Close deterministic-core dogfooding P0 fixes | complete | external-user trial on `/Users/cici/anomaly_detection` exposed scan-scope trust disclosure and `strict_mainline` multi-head conflict gaps; targeted tests cover both fixes |
@@ -43,7 +43,7 @@ Move the repository public surface into a standalone `plangraph` product context
 
 ## Remaining Planned Phases
 
-- SQLite index and `.plangraph/` persisted graph storage are in active local development. First slice implemented `index` and `status`; `sync`, FTS, MCP reads, and semantic edge cache remain.
+- SQLite index and `.plangraph/` persisted graph storage are in active local development. Current local state is schema v5: `index`, `status`, `sync`, deterministic `query`, and a short-CJK / substring fallback from FTS to SQLite `LIKE` are implemented; semantic edge cache remains derived and explicit.
 - MCP now has a first supported host path for Codex: `install`, `uninstall`, and `discover-mcp` manage one global Codex MCP entry, while the stdio server discovers the active repo from `rootUri` / `workspaceFolders` and falls back to explicit env override only when needed.
 - Markdown body-link extraction has a read-only v0.3 query implementation. Real-repo Stop/Go initially paused SQLite because repo-local edges were sparse and outside-repo links dominated.
 - External-reference adoption is complete for the current v0.3.x line: `adopt-external-references --apply` localized 4 useful external Markdown refs into the oncall plan-update repo, rewrote links, registered imported docs as non-authoritative governed context, and improved body-links from `edge_count=1 / unresolved_count=8` to `edge_count=9 / unresolved_count=0 / external_reference_count=4`.

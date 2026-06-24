@@ -35,7 +35,8 @@ CONFIG_PATH = '.plangraph.yml'
 IGNORE_PATH = '.plangraph.ignore'
 INDEX_DIR = '.plangraph'
 INDEX_DB_PATH = '.plangraph/plangraph.db'
-INDEX_SCHEMA_VERSION = 4
+INDEX_SCHEMA_VERSION = 5
+INDEX_SCHEMA_NOTE = 'sqlite-like-fallback-for-short-and-cjk-query-terms'
 MCP_PROTOCOL_VERSION = '2025-11-25'
 DEFAULT_MCP_SERVER_NAME = 'plangraph'
 MCP_DISCOVERY_OVERRIDE_ENV_VARS = [
@@ -2210,6 +2211,7 @@ def rebuild_sqlite_index(repo_root: Path, cfg: dict[str, Any]) -> dict[str, Any]
             ''',
             [
                 ('schema_version', str(INDEX_SCHEMA_VERSION)),
+                ('schema_note', INDEX_SCHEMA_NOTE),
                 ('indexed_at', date.today().isoformat()),
                 ('repo_root', str(repo_root)),
                 ('registry_path', cfg.get('registry_path', 'docs/plan_registry.md')),
@@ -2450,6 +2452,7 @@ def sqlite_status(repo_root: Path, cfg: dict[str, Any], rows: list[dict[str, str
         'exists': db_path.exists(),
         'stale': True,
         'schema_version': '',
+        'schema_note': '',
         'indexed_at': '',
         'node_count': 0,
         'edge_count': 0,
@@ -2469,6 +2472,7 @@ def sqlite_status(repo_root: Path, cfg: dict[str, Any], rows: list[dict[str, str
             metadata = load_index_metadata(conn)
             schema_version = metadata.get('schema_version', '')
             result['schema_version'] = schema_version
+            result['schema_note'] = metadata.get('schema_note', '')
             result['indexed_at'] = metadata.get('indexed_at', '')
             result['node_count'] = sqlite_table_count(conn, 'nodes')
             result['edge_count'] = sqlite_table_count(conn, 'edges')
@@ -2528,6 +2532,7 @@ def sqlite_query(repo_root: Path, cfg: dict[str, Any], text: str) -> dict[str, A
     db_path = index_db_path(repo_root, cfg)
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
+    match_source = 'fts'
     try:
         with sqlite3.connect(db_path) as conn:
             try:
@@ -2541,8 +2546,9 @@ def sqlite_query(repo_root: Path, cfg: dict[str, Any], text: str) -> dict[str, A
                     ''',
                     (text,),
                 ).fetchall()
-                match_source = 'fts'
             except sqlite3.DatabaseError:
+                rows = []
+            if not rows:
                 rows = conn.execute(
                     '''
                     SELECT plan_id, title, doc_path, body, notes
@@ -2580,6 +2586,7 @@ def sqlite_query(repo_root: Path, cfg: dict[str, Any], text: str) -> dict[str, A
         'query': 'query',
         'text': text,
         'stale': False,
+        'match_strategy': match_source,
         'count': len(results),
         'results': results,
         'status': status,

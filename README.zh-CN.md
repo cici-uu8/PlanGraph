@@ -101,6 +101,8 @@ PlanGraph 当前先聚焦确定性基础：
 
 SQLite、MCP 和 semantic edges 都是派生层。Registry 仍是真源；普通 `query` 保持确定性文本搜索，不默认混入 semantic 结果，语义软边只通过显式 `semantic` 命令输出。
 
+现在 SQLite query 会保留英文长词场景下的 FTS 主路径，但当 FTS 返回 0 结果时，会自动退回 SQLite `LIKE '%term%'` 子串匹配。这个回退主要是为中文短词和子串检索准备的，避免中文用户把“搜不到”误解成“仓库里没有”。
+
 ## 发布边界
 
 当前稳定公开能力是确定性的 PlanGraph 工作流：adoption scan、bootstrap、registry 维护、生命周期 lint，以及 mainline、lineage、impact、conflicts、body links、external references 等图谱查询。

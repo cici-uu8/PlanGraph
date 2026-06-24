@@ -175,7 +175,8 @@ class GovernanceCommandTests(unittest.TestCase):
             indexed_data = json.loads(indexed.stdout)
             self.assertTrue(indexed_data['exists'])
             self.assertFalse(indexed_data['stale'])
-            self.assertEqual(indexed_data['schema_version'], '4')
+            self.assertEqual(indexed_data['schema_version'], '5')
+            self.assertEqual(indexed_data['schema_note'], 'sqlite-like-fallback-for-short-and-cjk-query-terms')
             self.assertEqual(indexed_data['node_count'], 2)
             self.assertGreaterEqual(indexed_data['edge_count'], 1)
             self.assertEqual(indexed_data['unresolved_count'], 0)
@@ -294,7 +295,7 @@ class GovernanceCommandTests(unittest.TestCase):
             synced = run_cli(root, 'sync')
             synced_data = json.loads(synced.stdout)
             self.assertEqual(synced_data['action'], 'rebuilt')
-            self.assertEqual(synced_data['status']['schema_version'], '4')
+            self.assertEqual(synced_data['status']['schema_version'], '5')
 
     def test_query_uses_sqlite_index(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -316,9 +317,35 @@ class GovernanceCommandTests(unittest.TestCase):
             self.assertEqual(data['query'], 'query')
             self.assertEqual(data['text'], 'retrieval ladder')
             self.assertFalse(data['stale'])
+            self.assertEqual(data['match_strategy'], 'fts')
             self.assertGreaterEqual(data['count'], 1)
             self.assertEqual(data['results'][0]['doc_path'], 'docs/week1_plan.md')
             self.assertIn(data['results'][0]['match_source'], {'fts', 'like'})
+
+    def test_query_falls_back_to_like_for_short_cjk_terms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / 'docs'
+            docs.mkdir()
+            write_minimal_repo_config(root)
+            run_cli(root, 'bootstrap', '--skip-install-agents-block')
+            (docs / 'week1_plan.md').write_text(
+                '# 中文计划\n\n这是中文检索回退测试，用来验证短词查询。\n',
+                encoding='utf-8',
+            )
+            run_cli(root, 'register', 'docs/week1_plan.md')
+            run_cli(root, 'index')
+
+            result = run_cli(root, 'query', '中文')
+            data = json.loads(result.stdout)
+
+            self.assertEqual(data['query'], 'query')
+            self.assertEqual(data['text'], '中文')
+            self.assertFalse(data['stale'])
+            self.assertEqual(data['match_strategy'], 'like')
+            self.assertEqual(data['count'], 1)
+            self.assertEqual(data['results'][0]['doc_path'], 'docs/week1_plan.md')
+            self.assertEqual(data['results'][0]['match_source'], 'like')
 
     def test_query_refuses_stale_index(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -571,7 +598,7 @@ class GovernanceCommandTests(unittest.TestCase):
 
             indexed = run_cli(root, 'index')
             indexed_data = json.loads(indexed.stdout)
-            self.assertEqual(indexed_data['schema_version'], '4')
+            self.assertEqual(indexed_data['schema_version'], '5')
             self.assertEqual(indexed_data['semantic_edge_count'], 0)
 
             semantic = run_cli(root, 'semantic')

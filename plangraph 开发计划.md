@@ -622,14 +622,14 @@ Stop / Go：
 当前状态：
 
 - 第一段本地实现已完成：`index` 会创建 `.plangraph/plangraph.db`，写入 `metadata`、`nodes`、`edges`、`files`、`unresolved_refs`、`external_refs` 和 `node_fts`。
-- `status` 是只读命令，报告 `db_path`、`exists`、`stale`、`schema_version`、`node_count`、`edge_count`、`file_count`、`unresolved_count`、`external_reference_count` 和 `registry_row_count`。
+- `status` 是只读命令，报告 `db_path`、`exists`、`stale`、`schema_version`、`schema_note`、`node_count`、`edge_count`、`file_count`、`unresolved_count`、`external_reference_count` 和 `registry_row_count`。
 - `sync` 会在索引 missing、stale 或 schema 过期时全量重建；当前先用可理解的全量 rebuild，后续再优化增量。
-- `query <text>` 会拒绝 stale index，并通过 `node_fts` 查询 indexed title/path/body/notes。
+- `query <text>` 会拒绝 stale index，优先通过 `node_fts` 查询 indexed title/path/body/notes；当 FTS 返回 0 结果或查询异常时，再退回 SQLite `LIKE '%term%'` 子串匹配，避免中文短词和子串检索被误判为“不存在”。
 - 普通 `query` 不混入 `semantic_results`；语义软边只通过显式 `semantic` 命令输出。
-- schema version 4 为 `semantic_edges` 增加 `relation_scope`，旧 schema 会触发 `sync` 重建。
+- schema version 5 写入 `schema_note=sqlite-like-fallback-for-short-and-cjk-query-terms`，并保留 schema version 4 的 `semantic_edges.relation_scope`；旧 schema 会触发 `sync` 重建。
 - 索引仍是派生缓存，registry/frontmatter/body links 仍是真源。
 - 真实 oncall plan-update 仓库 smoke：`node_count=54`、`edge_count=69`、`file_count=57`、`unresolved_count=0`、`external_reference_count=4`、`stale=false`。
-- 真实 oncall plan-update query smoke：`query RAG` 返回 20 条 FTS 结果，`sync` 在 schema 2 后为 `action=noop`。
+- 真实 oncall plan-update query smoke：`sync` 重建到 `schema_version=5` 且 `stale=false`；`query 图谱` 返回 `match_strategy=like`、`count=1`，证明中文短词 fallback 在真实仓库可用。
 - 下一段优先级是 MCP 读取和 context 查询，而不是把 SQLite 变成 registry 写入源。
 
 Stop / Go：
@@ -713,7 +713,7 @@ Stop / Go：
 - 普通 `query` 不再默认混入 semantic 结果，避免把软推断伪装成确定性搜索结果。
 - 当前语义层不是 embedding，也不是 possible conflict 判定；只提供 `semantic_overlap` 软提示，带 `confidence`、`provenance=semantic-inferred`、`relation_scope=registry-zero-relation` 和 `shared_terms`。
 - semantic 的真实增量判据是：优先展示 registry 没有直接硬关系、且不在同一个 workstream 的高置信相似边；同 workstream sibling 和已有 hard edge 不作为优先 semantic 结果。
-- 真实 oncall plan-update 仓库 smoke：按增量判据过滤后，显式 `semantic` 生成 `semantic_edge_count=1`，`status` 显示 `schema_version=4`、`stale=false`；普通 `query RAG` 返回 20 条 FTS 结果且不包含 `semantic_results`。
+- 真实 oncall plan-update 仓库 smoke：按增量判据过滤后，显式 `semantic` 生成过 `semantic_edge_count=1`；当前 SQLite smoke 已更新到 `schema_version=5`、`stale=false`。普通 `query` 不包含 `semantic_results`，中文短词可在 FTS 无结果时走 `LIKE` fallback。
 
 Stop / Go：
 

@@ -252,7 +252,7 @@ This checks for:
 
 Outside-repo local Markdown links are reported as `external_reference` context instead of failing lint by default. Missing repo-local links still fail lint because they point at broken or unregistered documents inside the governed repo.
 
-After adopting external references, run `graph body-links` again. Use `index` to build the local SQLite cache when persisted graph status, future MCP reads, or multi-agent read stability matter. Use `status` to check whether the cache exists and whether it is stale after registry or plan-document changes. Use `sync` to rebuild missing, stale, or old-schema indexes. Use `query` for SQLite-backed text search over indexed plan titles, paths, bodies, and notes.
+After adopting external references, run `graph body-links` again. Use `index` to build the local SQLite cache when persisted graph status, future MCP reads, or multi-agent read stability matter. Use `status` to check whether the cache exists and whether it is stale after registry or plan-document changes. Use `sync` to rebuild missing, stale, or old-schema indexes. Use `query` for SQLite-backed text search over indexed plan titles, paths, bodies, and notes. `query` keeps FTS as the primary path and falls back to SQLite `LIKE` only when FTS returns no rows or cannot parse the query, mainly for short CJK terms and substring search.
 
 Use `mcp` only when a host wants a stdio MCP server. The MCP layer exposes read-only status, mainline, query, lineage, impact, context, conflicts, and body-link tools. It does not replace the CLI or registry.
 

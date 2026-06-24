@@ -45,3 +45,5 @@
 - Made MCP workspace discovery real instead of declarative: `initialize` now resolves the active repo from `rootUri`, `workspaceFolders`, or explicit override env vars, and the running stdio session switches subsequent `tools/call` requests onto that discovered repo root.
 - Updated README, zh README, SKILL, and task plan to document the Codex-first MCP install path and the fact that repo discovery is dynamic rather than one-static-server-per-repo.
 - Verification passed after the MCP install/discovery slice: targeted MCP install/discovery tests plus full `python3 -m unittest discover -s tests -p 'test_*.py'` now report 47 tests OK, and `git diff --check` is clean.
+- Continued `v0.4 SQLite` to schema version 5: added `schema_note=sqlite-like-fallback-for-short-and-cjk-query-terms` and changed deterministic `query` behavior to keep FTS first, then fall back to SQLite `LIKE '%term%'` when FTS returns zero rows.
+- Added regression coverage for the product bug that mattered in real use: a short Chinese query like `中文` now returns a result through the fallback path with `match_strategy=like`, while ordinary English phrase queries still report `match_strategy=fts`.
