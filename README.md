@@ -82,6 +82,18 @@ Use $plangraph to enable planning graph.
 | `Use $plangraph to analyze this repo.` | Read-only scan. It writes an adoption report, but does not create a registry or modify `AGENTS.md`. |
 | `Use $plangraph to enable planning graph.` | Creates governance files and installs the managed `AGENTS.md` block unless you explicitly refuse. |
 
+## What Success Looks Like
+
+In the first few minutes, a useful repo should give you three concrete signals:
+
+| Step | You should see |
+|---|---|
+| Analyze | `docs/plan_adoption_report.md` lists candidate plan docs, skipped in-scope files, and out-of-scope Markdown that was not inspected |
+| Enable | `docs/plan_registry.md` separates current plans from closed, superseded, deferred, reference, and evidence docs |
+| Query | `graph mainline` and `graph context <plan_id>` return compact JSON an agent can use before editing plans |
+
+If the adoption report finds no meaningful plan documents, that is also a valid result: the repo probably does not need PlanGraph yet.
+
 ## Current Capabilities
 
 PlanGraph currently focuses on the deterministic foundation:

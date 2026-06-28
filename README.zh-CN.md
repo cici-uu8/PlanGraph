@@ -82,6 +82,18 @@ npx skills add cici-uu8/PlanGraph
 | `用 $plangraph 分析这个仓库。` | 只读扫描。会写 adoption report，但不创建 registry，也不修改 `AGENTS.md`。 |
 | `用 $plangraph 启用计划图谱。` | 创建治理文件，并默认安装 managed `AGENTS.md` block，除非你明确拒绝。 |
 
+## 成功时你会看到什么
+
+前几分钟内，一个适合使用 PlanGraph 的仓库应该给你三个明确信号：
+
+| 步骤 | 你应该看到 |
+|---|---|
+| 分析 | `docs/plan_adoption_report.md` 列出候选计划文档、范围内跳过文件，以及范围外未检查的 Markdown |
+| 启用 | `docs/plan_registry.md` 把当前计划与 closed、superseded、deferred、reference、evidence 文档分开 |
+| 查询 | `graph mainline` 和 `graph context <plan_id>` 返回 agent 在改计划前能直接使用的 compact JSON |
+
+如果 adoption report 没找到有意义的计划文档，这也是有效结果：这个仓库可能暂时不需要 PlanGraph。
+
 ## 当前能力
 
 PlanGraph 当前先聚焦确定性基础：
